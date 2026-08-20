@@ -22,16 +22,15 @@ Supported platforms:
 | darwin  | ✅    | ✅    |
 | windows | ✅    | —     |
 
-### Pinning a version
-
-```bash
-KTN_VERSION=v1.45.2 curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash
-```
-
 ## Releases
 
-Only one release is kept here at a time: `releases/latest` always points at the
-current stable version. Release candidates are not published to this channel.
+This channel is rolling-latest: exactly one release is kept, so
+`releases/latest` is always well defined and the repository never accumulates.
+
+A consequence worth knowing: **older versions cannot be installed from here.**
+`KTN_VERSION` only resolves while it names the current release — any earlier
+tag has already been pruned and the installer fails loudly rather than
+installing something else. Release candidates are never published here.
 
 ## Usage
 
