@@ -123,7 +123,13 @@ BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 TEMP_DIR=$(mktemp -d)
 # The temp dir holds the archive and the extracted binary; drop it on every
 # exit path, including the failures above the install step.
-trap 'rm -rf "$TEMP_DIR"' EXIT
+# STAGED_BINARY is created later, inside INSTALL_DIR rather than TEMP_DIR (the
+# final step must be a same-filesystem rename). An interrupt between its mktemp
+# and the mv would otherwise strand an executable next to the real binary, so
+# the trap clears it too. After a successful mv the pathname is already gone,
+# which makes the rm a harmless no-op.
+STAGED_BINARY=""
+trap 'rm -rf "$TEMP_DIR"; [ -n "$STAGED_BINARY" ] && rm -f "$STAGED_BINARY"' EXIT
 
 echo -e "${YELLOW}⬇️  Downloading ${ASSET_NAME}...${NC}"
 curl -fsSL --retry 3 --proto '=https' -o "${TEMP_DIR}/${ASSET_NAME}" \
@@ -205,10 +211,10 @@ chmod +x "$EXTRACTED_BINARY"
 STAGED_BINARY=$(mktemp "${INSTALL_DIR}/${BINARY_NAME}.XXXXXX") \
     || die "Cannot stage into ${INSTALL_DIR}"
 cp "$EXTRACTED_BINARY" "$STAGED_BINARY" \
-    || { rm -f "$STAGED_BINARY"; die "Cannot stage into ${INSTALL_DIR}"; }
+    || die "Cannot stage into ${INSTALL_DIR}"
 chmod 0755 "$STAGED_BINARY"
 mv -f "$STAGED_BINARY" "${INSTALL_DIR}/${BINARY_NAME}" \
-    || { rm -f "$STAGED_BINARY"; die "Cannot install to ${INSTALL_DIR}"; }
+    || die "Cannot install to ${INSTALL_DIR}"
 
 echo -e "${GREEN}✅ Installed to ${INSTALL_DIR}/${BINARY_NAME}${NC}"
 
