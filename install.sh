@@ -198,19 +198,24 @@ fi
 # Install
 # ─────────────────────────────────────────────────────────────
 chmod +x "$EXTRACTED_BINARY"
-# Replacing a running binary in place fails on Linux (ETXTBSY); remove first.
-rm -f "${INSTALL_DIR}/${BINARY_NAME}"
-mv "$EXTRACTED_BINARY" "${INSTALL_DIR}/${BINARY_NAME}" \
-    || die "Cannot install to ${INSTALL_DIR}"
+# Stage inside INSTALL_DIR so the final step is a same-filesystem rename:
+# an interrupted install then leaves the previous binary intact instead of a
+# truncated one. Replacing a running binary in place fails on Linux (ETXTBSY),
+# and rename() over a busy target does not, which is the other reason to stage.
+STAGED_BINARY=$(mktemp "${INSTALL_DIR}/${BINARY_NAME}.XXXXXX") \
+    || die "Cannot stage into ${INSTALL_DIR}"
+cp "$EXTRACTED_BINARY" "$STAGED_BINARY" \
+    || { rm -f "$STAGED_BINARY"; die "Cannot stage into ${INSTALL_DIR}"; }
+chmod 0755 "$STAGED_BINARY"
+mv -f "$STAGED_BINARY" "${INSTALL_DIR}/${BINARY_NAME}" \
+    || { rm -f "$STAGED_BINARY"; die "Cannot install to ${INSTALL_DIR}"; }
 
 echo -e "${GREEN}✅ Installed to ${INSTALL_DIR}/${BINARY_NAME}${NC}"
 
-# Verify installation
+# Verify the binary we just wrote, never whatever `command -v` resolves: an
+# older ktn-linter earlier in PATH would otherwise report a success that says
+# nothing about this install.
 BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
-if command -v "$BINARY_NAME" >/dev/null 2>&1; then
-    BINARY_PATH=$(command -v "$BINARY_NAME")
-fi
-
 VERSION_OUTPUT=$("$BINARY_PATH" version 2>&1) || die "Installed binary is not runnable"
 echo -e "${GREEN}✅ Installation verified: ${VERSION_OUTPUT}${NC}"
 
