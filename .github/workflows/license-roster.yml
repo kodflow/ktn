@@ -1,0 +1,125 @@
+name: Licence roster
+
+# The roster is the only statement ktn-linter trusts, and only because it is
+# signed with the vendor key held in this repository's secrets. Everything
+# else here is public on purpose: fingerprints and dates leak nothing.
+#
+# Two triggers, two jobs:
+#   * a maintainer applying `license:approved` to a request publishes that
+#     subject's public key;
+#   * an hourly schedule re-signs the roster so its 24h validity window keeps
+#     rolling. Without that the window would close and every client would
+#     block, which is the correct failure direction but not the intended one.
+
+on:
+  issues:
+    types: [labeled]
+  schedule:
+    # Hourly, off the :00 mark to stay out of the cron stampede. The window is
+    # 24h, so a missed run is harmless; a day of missed runs is not.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  # Two runs writing licenses/ at once would race on the roster. Queue rather
+  # than cancel: an approval must never be dropped.
+  group: licence-roster
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish an approved subject
+    runs-on: ubuntu-latest
+    # Only a maintainer can apply a label, so the label IS the approval gate.
+    # Anyone may open an issue; nobody but a maintainer can make it count.
+    if: github.event_name == 'issues' && github.event.label.name == 'license:approved'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Extract and validate the request
+        id: request
+        env:
+          BODY: ${{ github.event.issue.body }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: python3 .github/scripts/parse_request.py
+
+      - name: Publish the public key
+        env:
+          UUID: ${{ steps.request.outputs.uuid }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          set -euo pipefail
+          mv /tmp/subject.pub "licenses/${UUID}.pub"
+          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}"
+
+      - name: Commit
+        env:
+          UUID: ${{ steps.request.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add licenses/
+          git commit -m "licence: publish ${UUID}"
+          git push
+
+      - name: Close the request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --comment "Published. The licence activates on the next roster signature (within the hour)."
+
+  sign:
+    name: Re-sign the roster
+    runs-on: ubuntu-latest
+    # Runs after a publish and on the schedule. `always()` keeps the scheduled
+    # path alive even though `publish` is skipped there.
+    needs: [publish]
+    if: always() && (github.event_name != 'issues' || needs.publish.result == 'success')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          # The publish job just pushed; without a fresh ref the signature
+          # would cover the previous roster.
+          ref: main
+
+      - name: Build the roster
+        run: python3 .github/scripts/build_roster.py
+
+      - name: Sign it
+        env:
+          SIGNING_KEY: ${{ secrets.VENDOR_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          # An unsigned roster would authorize nobody, so publishing one is
+          # pointless; but failing hourly until the key is provisioned trains
+          # everyone to ignore this workflow. Skip loudly instead.
+          if [ -z "${SIGNING_KEY}" ]; then
+            echo "::warning::VENDOR_SIGNING_KEY is unset — roster built but left unsigned."
+            exit 0
+          fi
+          printf '%s' "${SIGNING_KEY}" > /tmp/vendor.pem
+          chmod 600 /tmp/vendor.pem
+          # Ed25519 signs the message directly; -rawin is what selects that
+          # mode rather than pre-hashing, and it must match what the binary
+          # verifies.
+          openssl pkeyutl -sign -rawin -inkey /tmp/vendor.pem \
+            -in licenses/roster.json -out licenses/roster.json.sig
+          rm -f /tmp/vendor.pem
+
+      - name: Commit the signed pair
+        if: hashFiles('licenses/roster.json.sig') != ''
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add licenses/roster.json licenses/roster.json.sig
+          # A no-op run is normal when nothing changed and the window has not
+          # moved enough to matter; do not fail the schedule over it.
+          git diff --cached --quiet || git commit -m "licence: re-sign roster"
+          git push
