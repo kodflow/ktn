@@ -57,11 +57,18 @@ def main() -> None:
     # account. Without this check an issue claiming a known uuid would swap
     # the key and hijack the licence.
     owners_path = pathlib.Path("licenses/owners.json")
-    if owners_path.exists():
-        owners = json.loads(owners_path.read_text() or "{}")
-        recorded = owners.get(uuid)
-        if recorded is not None and recorded != author:
-            fail(f"subject {uuid} belongs to @{recorded}, not @{author}")
+    owners = json.loads(owners_path.read_text() or "{}") if owners_path.exists() else {}
+
+    recorded = owners.get(uuid)
+    if recorded is not None and recorded != author:
+        fail(f"subject {uuid} belongs to @{recorded}, not @{author}")
+
+    # One licence per account, checked here rather than left to the issue
+    # workflow alone: the dedupe job only catches issues opened through the
+    # form, this is what makes it true regardless of how the issue got made.
+    other = next((existing for existing, owner in owners.items() if owner == author and existing != uuid), None)
+    if other is not None:
+        fail(f"@{author} already owns subject {other} — one licence per account")
 
     pathlib.Path("/tmp/subject.pub").write_text(key.rstrip() + "\n")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
