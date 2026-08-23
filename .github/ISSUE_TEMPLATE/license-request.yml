@@ -1,6 +1,7 @@
 name: Licence request
 description: Request or rotate a licence for a ktn-linter subject.
 title: "licence: "
+labels: [license-request]
 body:
   - type: markdown
     attributes:
@@ -12,6 +13,11 @@ body:
 
         To set a term other than the one-year default, ask the maintainer to
         add an `expireAt:YYYY-MM-DD` label before approving.
+
+        One issue per account, for the life of the licence: rotations,
+        questions, eventual revocation — everything happens here, not in a
+        new issue. A second one gets closed automatically with a link back
+        to this one.
 
   - type: input
     id: subject
