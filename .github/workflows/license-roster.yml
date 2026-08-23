@@ -54,6 +54,7 @@ jobs:
           AUTHOR: ${{ github.event.issue.user.login }}
         run: |
           set -euo pipefail
+          mkdir -p licenses
           mv /tmp/subject.pub "licenses/${UUID}.pub"
           python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}"
 
