@@ -1,0 +1,37 @@
+name: Licence request
+description: Request or rotate a licence for a ktn-linter subject.
+title: "licence: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Opening this does nothing by itself. A maintainer applies the
+        `license:approved` label after review, which is what actually
+        publishes the key below — anyone can open one of these; nothing
+        happens until that label lands.
+
+        To set a term other than the one-year default, ask the maintainer to
+        add an `expireAt:YYYY-MM-DD` label before approving.
+
+  - type: input
+    id: subject
+    attributes:
+      label: Subject
+      description: >-
+        Canonical v4 UUID identifying this subject. Generate one with
+        `ktn-linter license create`. Rotating an existing key re-uses the
+        same UUID.
+      placeholder: eb56f295-9428-49b1-9dc3-0ebc6e383444
+    validations:
+      required: true
+
+  - type: input
+    id: public-key
+    attributes:
+      label: Public key
+      description: >-
+        The single `ssh-ed25519 ...` authorized-keys line printed by
+        `ktn-linter license create`.
+      placeholder: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+    validations:
+      required: true
