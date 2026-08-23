@@ -25,8 +25,14 @@ def fingerprint(line: str) -> str:
 
 
 def main() -> None:
+    licenses_dir = pathlib.Path("licenses")
+    # A fresh mirror has no licenses/ until the first subject is published;
+    # the hourly schedule must still succeed with zero subjects instead of
+    # crashing on a missing parent directory.
+    licenses_dir.mkdir(parents=True, exist_ok=True)
+
     subjects = {}
-    for pub in sorted(pathlib.Path("licenses").glob("*.pub")):
+    for pub in sorted(licenses_dir.glob("*.pub")):
         subjects[pub.stem] = fingerprint(pub.read_text().strip())
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -38,7 +44,7 @@ def main() -> None:
     # Separators without spaces keep the signed bytes stable: the signature
     # covers the exact serialisation, so cosmetic formatting changes would
     # invalidate it.
-    pathlib.Path("licenses/roster.json").write_text(
+    (licenses_dir / "roster.json").write_text(
         json.dumps(roster, separators=(",", ":"), sort_keys=True)
     )
     print(f"roster: {len(subjects)} subject(s), valid until {roster['exp']}")
