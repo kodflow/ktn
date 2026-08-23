@@ -1,7 +1,7 @@
 name: Licence request
 description: Request or rotate a licence for a ktn-linter subject.
 title: "licence: "
-labels: [license-request]
+labels: ["license:request"]
 body:
   - type: markdown
     attributes:
