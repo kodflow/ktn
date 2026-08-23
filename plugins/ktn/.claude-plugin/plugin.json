@@ -1,0 +1,8 @@
+{
+  "name": "ktn",
+  "version": "1.0.0",
+  "description": "ktn-linter MCP server registration plus the /ktn install/upgrade skill.",
+  "author": {
+    "name": "kodflow"
+  }
+}
