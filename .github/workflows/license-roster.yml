@@ -4,7 +4,7 @@ name: Licence roster
 # signed with the vendor key held in this repository's secrets. Everything
 # else here is public on purpose: fingerprints and dates leak nothing.
 #
-# One event, two label-gated jobs, plus the schedule:
+# One event, three action/label-gated jobs, plus the schedule:
 #   * a maintainer applying `license:approved` to a request publishes that
 #     subject's public key, with a term — one year by default, or whatever an
 #     `expireAt:YYYY-MM-DD` label already on the issue says;
@@ -17,10 +17,16 @@ name: Licence roster
 #     correct failure direction but not the intended one. That 24h window is
 #     unrelated to a subject's own term: one is roster freshness, the other
 #     is how long that licence lasts.
+#
+# One account, one subject, one issue — forever, not just "one open at a
+# time". The dedupe job redirects a second issue at open time for anyone
+# using the request form; parse_request.py refuses a second subject for an
+# already-bound author at approval time regardless of how the issue was
+# made, since that's the check nothing can route around.
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, opened]
   schedule:
     # Hourly, off the :00 mark to stay out of the cron stampede. The window is
     # 24h, so a missed run is harmless; a day of missed runs is not.
@@ -38,6 +44,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  dedupe:
+    name: Enforce one issue per account
+    runs-on: ubuntu-latest
+    # Fires when the request form's own license-request label lands on a
+    # freshly opened issue. This is UX, not the actual gate — a fast redirect
+    # instead of making the requester wait for a maintainer to try and fail
+    # an approval. parse_request.py is what makes it unbypassable.
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'opened' &&
+      contains(github.event.issue.labels.*.name, 'license-request')
+    steps:
+      - name: Close it if this account already has one
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --repo "${{ github.repository }}" \
+            --author "${{ github.event.issue.user.login }}" \
+            --label license-request --state all \
+            --json number,createdAt \
+            --jq "map(select(.number != ${{ github.event.issue.number }})) | sort_by(.createdAt) | .[0].number // empty")
+          if [ -n "${existing}" ]; then
+            gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
+              --comment "One issue per account. Your licence lives on #${existing} — reopen it if it's closed and continue there. Closing this one."
+          fi
+
   publish:
     name: Publish an approved subject
     runs-on: ubuntu-latest
