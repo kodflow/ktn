@@ -47,13 +47,13 @@ jobs:
   dedupe:
     name: Enforce one issue per account
     runs-on: ubuntu-latest
-    # Fires when the request form's own license-request label lands on a
+    # Fires when the request form's own license:request label lands on a
     # freshly opened issue. This is UX, not the actual gate — a fast redirect
     # instead of making the requester wait for a maintainer to try and fail
     # an approval. parse_request.py is what makes it unbypassable.
     if: >-
       github.event_name == 'issues' && github.event.action == 'opened' &&
-      contains(github.event.issue.labels.*.name, 'license-request')
+      contains(github.event.issue.labels.*.name, 'license:request')
     steps:
       - name: Close it if this account already has one
         env:
@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           existing=$(gh issue list --repo "${{ github.repository }}" \
             --author "${{ github.event.issue.user.login }}" \
-            --label license-request --state all \
+            --label "license:request" --state all \
             --json number,createdAt \
             --jq "map(select(.number != ${{ github.event.issue.number }})) | sort_by(.createdAt) | .[0].number // empty")
           if [ -n "${existing}" ]; then
