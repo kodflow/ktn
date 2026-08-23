@@ -25,31 +25,35 @@ Check for a `.claude/` directory in the current working tree.
   install ktn-linter once for the whole host and let this plugin's
   `.mcp.json` pick it up from `PATH`.
 
-## 2. Check whether it's already done
+## 2. Check whether the binary is already there
 
 ```bash
 command -v ktn-linter && ktn-linter version
 ```
 
-If this succeeds, only confirm the MCP server is registered (project scope:
-check `./mcp.json` or `./.vscode/mcp.json` for a `ktn-linter` entry; host
-scope: nothing further to do, this plugin's own `.mcp.json` covers it) and
-stop — do not reinstall a working binary.
+This only answers "is a binary present" — it does not mean nothing else is
+needed. Keep going: if the user asked to *upgrade*, run `ktn-linter upgrade`
+regardless of what's already installed (skip step 3's install command). In
+project scope, still verify the MCP/hooks wiring below even when the binary
+was already present — a binary on `PATH` says nothing about whether this
+particular project has run `ktn-linter mcp install` yet.
 
-## 3. Install or upgrade, per scope
+## 3. Install (or wire), per scope
 
 Follow `install/README.md` for the exact commands. Summarized:
 
-- **Project scope**: build or fetch `ktn-linter` for this project, then run
-  `ktn-linter mcp install` from the project root — it writes `mcp.json` and
-  the Claude Code hooks in `.claude/settings.json`, and is idempotent
-  (safe to re-run).
+- **Project scope**: get the binary (build or fetch, see `install/README.md`
+  step 1), then run `ktn-linter mcp install` from the project root — it
+  writes a project-local `mcp.json` and the Claude Code hooks in
+  `.claude/settings.json`, and is idempotent (safe to re-run, so run it even
+  if you're not sure it already happened).
 - **Host scope**: run the universal installer
   (`curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash`).
   It resolves the latest release, verifies the archive against
   `checksums.txt`, and installs into `/usr/local/bin` when writable, falling
-  back to `~/.local/bin` otherwise. Nothing else to configure — this plugin
-  already points at `ktn-linter` on `PATH`.
+  back to `~/.local/bin` otherwise. Nothing else to configure here — that's
+  what the plugin's own `.mcp.json` is for, and it only takes effect once
+  `/plugin install ktn` has been run.
 
 If a binary is already installed and only needs a newer version, prefer
 `ktn-linter upgrade` over rerunning the installer — it does the same

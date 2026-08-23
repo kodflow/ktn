@@ -26,13 +26,13 @@ Supported platforms:
 
 This repository also serves as a Claude Code plugin marketplace:
 
-```
+```text
 /plugin marketplace add kodflow/ktn
 /plugin install ktn
 ```
 
 The plugin registers the `ktn-linter` MCP server (live diagnostics as you
-edit) and installs the `/ktn` skill, which gets the binary itself onto
+edit) and installs the `ktn:ktn` skill, which gets the binary itself onto
 `PATH` and, for a project that wants its own edit-time enforcement hooks
 rather than relying on the plugin alone, wires it locally. See
 [`install/README.md`](install/README.md) for the exact procedure.

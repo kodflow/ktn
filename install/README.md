@@ -1,6 +1,6 @@
 # Installing ktn-linter
 
-This is the procedure the `/ktn` plugin skill follows. It exists as a
+This is the procedure the `ktn:ktn` plugin skill follows. It exists as a
 standalone document, not inline in the skill, so the steps stay correct even
 if the skill's own wording drifts — read this first if the two ever disagree.
 
@@ -38,9 +38,12 @@ hanging.
 
 Check for a `.claude/` directory in the current working tree.
 
-- **No `.claude/` → host scope. Nothing left to do.** This plugin's
-  `plugins/ktn/.mcp.json` already registers `ktn-linter serve` globally, the
-  moment the plugin is enabled and the binary is on `PATH`.
+- **No `.claude/` → host scope. Nothing left to do beyond the plugin itself.**
+  Once `/plugin install ktn` has run, this plugin's `plugins/ktn/.mcp.json`
+  registers `ktn-linter serve` at user scope — no per-project file, no
+  per-project step. That registration only takes effect for someone who has
+  actually installed the plugin; it is not something the binary install
+  alone provides.
 - **`.claude/` present → project scope.** Run this from the project root:
 
   ```bash
