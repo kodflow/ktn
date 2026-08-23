@@ -2,8 +2,10 @@
 """Rebuild the roster from the published public keys.
 
 The roster carries fingerprints rather than keys: it stays small, and the
-comparison the binary makes is exact. Its validity window is what bounds both
-revocation latency and how long a hostile endpoint can replay a genuine copy.
+comparison the binary makes is exact. Its top-level validity window is what
+bounds both revocation latency and how long a hostile endpoint can replay a
+genuine copy — separate from each subject's own "exp", which is that one
+licence's term and does not move on re-signature.
 """
 import base64
 import datetime
@@ -24,6 +26,23 @@ def fingerprint(line: str) -> str:
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
+def subject_value(pub: pathlib.Path, licenses_dir: pathlib.Path) -> dict:
+    """Build one subject's roster entry: fingerprint, plus its term if known.
+
+    A subject with no sidecar (or one missing the field) gets no "exp" at
+    all — pkg/license.SubjectValue treats an absent/zero expiry as "no expiry
+    recorded", not "already expired", so omitting it here is what lets a
+    subject published before this sidecar existed keep working.
+    """
+    value = {"fp": fingerprint(pub.read_text().strip())}
+    meta_path = licenses_dir / f"{pub.stem}.meta.json"
+    if meta_path.exists():
+        expires_at = json.loads(meta_path.read_text()).get("expiresAt")
+        if expires_at:
+            value["exp"] = expires_at
+    return value
+
+
 def main() -> None:
     licenses_dir = pathlib.Path("licenses")
     # A fresh mirror has no licenses/ until the first subject is published;
@@ -31,9 +50,10 @@ def main() -> None:
     # crashing on a missing parent directory.
     licenses_dir.mkdir(parents=True, exist_ok=True)
 
-    subjects = {}
-    for pub in sorted(licenses_dir.glob("*.pub")):
-        subjects[pub.stem] = fingerprint(pub.read_text().strip())
+    subjects = {
+        pub.stem: subject_value(pub, licenses_dir)
+        for pub in sorted(licenses_dir.glob("*.pub"))
+    }
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     roster = {
