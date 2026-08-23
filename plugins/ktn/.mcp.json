@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ktn-linter": {
+      "command": "ktn-linter",
+      "args": ["serve", "--port", "7717"],
+      "env": {}
+    }
+  }
+}

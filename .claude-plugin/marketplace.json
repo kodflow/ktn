@@ -1,0 +1,14 @@
+{
+  "name": "ktn",
+  "description": "KTN-Linter — a strict Go static analysis linter (staticcheck, govet, modernize plus native KTN rules) with a live MCP server for editor diagnostics.",
+  "owner": {
+    "name": "kodflow"
+  },
+  "plugins": [
+    {
+      "name": "ktn",
+      "source": "./plugins/ktn",
+      "description": "Wires the ktn-linter MCP server into Claude Code and includes the /ktn skill that installs or upgrades the ktn-linter binary."
+    }
+  ]
+}
