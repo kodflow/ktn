@@ -47,13 +47,20 @@ jobs:
   dedupe:
     name: Enforce one issue per account
     runs-on: ubuntu-latest
-    # Fires when the request form's own license:request label lands on a
-    # freshly opened issue. This is UX, not the actual gate — a fast redirect
-    # instead of making the requester wait for a maintainer to try and fail
-    # an approval. parse_request.py is what makes it unbypassable.
+    # Fires when a freshly opened issue carries either licence label. request
+    # is what the form and `ktn-linter license` both apply; update is listed
+    # too in case a rotation ever files its own issue instead of reusing the
+    # original one — untested (no rotation has happened yet), but matching it
+    # here is free: if rotations always reuse the original issue, this half
+    # of the check simply never fires. This job is UX, not the actual gate —
+    # a fast redirect instead of making the requester wait for a maintainer
+    # to try and fail an approval. parse_request.py is what makes the
+    # single-subject-per-account rule itself unbypassable; this only keeps
+    # the issue count down to one.
     if: >-
       github.event_name == 'issues' && github.event.action == 'opened' &&
-      contains(github.event.issue.labels.*.name, 'license:request')
+      (contains(github.event.issue.labels.*.name, 'license:request') ||
+       contains(github.event.issue.labels.*.name, 'license:update'))
     steps:
       - name: Close it if this account already has one
         env:
@@ -61,10 +68,11 @@ jobs:
         run: |
           set -euo pipefail
           existing=$(gh issue list --repo "${{ github.repository }}" \
-            --author "${{ github.event.issue.user.login }}" \
-            --label "license:request" --state all \
-            --json number,createdAt \
-            --jq "map(select(.number != ${{ github.event.issue.number }})) | sort_by(.createdAt) | .[0].number // empty")
+            --author "${{ github.event.issue.user.login }}" --state all \
+            --json number,createdAt,labels \
+            --jq '[.[] | select(.number != '"${{ github.event.issue.number }}"') |
+                   select(.labels | any(.name == "license:request" or .name == "license:update"))] |
+                  sort_by(.createdAt) | .[0].number // empty')
           if [ -n "${existing}" ]; then
             gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
               --comment "One issue per account. Your licence lives on #${existing} — reopen it if it's closed and continue there. Closing this one."
