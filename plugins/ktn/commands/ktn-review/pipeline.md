@@ -57,13 +57,16 @@ site the tracer flagged, and never suppresses.
 
 ## Phase 5 — Validate
 
-For each file touched, dispatch `ktn-go-validator` scoped to the rule
-just fixed (`--only-rule <code>`) — one violation, one dispatch, one
-scope — or, once a whole phase batch converges, `--phases <n>` for a
-single combined check. When the scope is a package, `ktn-go-validator`
-also runs `go build`/`go test` on it itself and folds any failure into
-the same diagnostics it returns. If a diagnostic remains, hand the file
-back to `ktn-violation-fixer` with the diagnostic as feedback. Up to two
+For each file touched, dispatch `ktn-go-validator` against its **owning
+package**, not the bare file — one violation, one dispatch, one scope
+(`--only-rule <code>`) — or, once a whole phase batch converges,
+`--phases <n>` for a single combined check against the same package.
+`ktn-go-validator` only runs `go build`/`go test` when its target is a
+package; a bare-file target skips that step entirely (its own contract),
+so a file-scoped dispatch here would validate the lint rule but never
+catch a fix that compiles clean per-file yet breaks the build or an
+existing test. If a diagnostic remains, hand the file back to
+`ktn-violation-fixer` with the diagnostic as feedback. Up to two
 retries; otherwise mark the violation `unresolved` in the report.
 
 A phase whose violations came from `NeedsRerun: true` in the context file
