@@ -19,8 +19,10 @@ Input: one Go file path.
 
 Process:
 
-1. `Grep` for `See:\s+\S+/\S+#\d+` and the literal `//ktn:keep` —
-   collect line ranges.
+1. `Grep` for `See:\s+\S+/\S+#\d+` and `(?m)^\s*//ktn:keep\s*$` —
+   collect line ranges. The pragma is commonly indented (inside a
+   function, above a struct field); match ignoring leading whitespace,
+   not only an unindented occurrence.
 2. For each declaration the auditor flagged, run `git blame -L
    <start>,<end> <file>` and keep the most recent commit subject; do
    NOT include hashes longer than 12 chars.

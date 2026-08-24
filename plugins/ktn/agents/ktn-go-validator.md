@@ -11,10 +11,11 @@ ktn-managed: true
 teamSafe: true
 allowed-tools:
   - Read
-  - Bash(gofmt *)
-  - Bash(go *)
-  - Bash(./builds/ktn-linter *)
-  - Bash(ktn-linter *)
+  - Bash(gofmt -w *)
+  - Bash(go build *)
+  - Bash(go test *)
+  - Bash(./builds/ktn-linter run *)
+  - Bash(ktn-linter run *)
 ---
 
 # ktn-go-validator — post-edit guard

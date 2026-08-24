@@ -12,8 +12,8 @@ ktn-managed: true
 teamSafe: true
 allowed-tools:
   - Read
-  - Bash(./builds/ktn-linter *)
-  - Bash(ktn-linter *)
+  - Bash(./builds/ktn-linter prompt *)
+  - Bash(ktn-linter prompt *)
   - Task
   - SendMessage
 ---

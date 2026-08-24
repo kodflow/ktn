@@ -60,10 +60,11 @@ site the tracer flagged, and never suppresses.
 For each file touched, dispatch `ktn-go-validator` scoped to the rule
 just fixed (`--only-rule <code>`) — one violation, one dispatch, one
 scope — or, once a whole phase batch converges, `--phases <n>` for a
-single combined check. Also `go build`/`go test` on the owning package.
-If a diagnostic remains, hand the file back to `ktn-violation-fixer` with
-the diagnostic as feedback. Up to two retries; otherwise mark the
-violation `unresolved` in the report.
+single combined check. When the scope is a package, `ktn-go-validator`
+also runs `go build`/`go test` on it itself and folds any failure into
+the same diagnostics it returns. If a diagnostic remains, hand the file
+back to `ktn-violation-fixer` with the diagnostic as feedback. Up to two
+retries; otherwise mark the violation `unresolved` in the report.
 
 A phase whose violations came from `NeedsRerun: true` in the context file
 (any phase that can create/move/delete files) requires a full
@@ -80,8 +81,12 @@ forward every violation already marked `unresolved` in an earlier pass
 of this same run — its retry budget is spent, and re-running
 `ktn-linter prompt` will surface it again verbatim. Then loop: re-run
 `ktn-linter prompt [path]`; if violations remain, exclude any that match
-an already-`unresolved` fingerprint (rule + file + line) and resume
-Phase 1 on the rest. Stop when 0 violations remain, or when a full pass
-resolves nothing new (every remaining violation is already
+an already-`unresolved` fingerprint — rule + file + diagnostic message,
+NOT line number: a later fix elsewhere in the same file can shift line
+numbers up or down, so a line-based fingerprint can both miss the
+violation it should exclude (it moved) and wrongly exclude an unrelated
+new violation that happens to land on the old line. Resume Phase 1 on
+the rest. Stop when 0 violations remain, or when a full pass resolves
+nothing new (every remaining violation is already
 `unresolved`) — re-running prompt and resuming Phase 1 forever on a
 violation that cannot converge is not progress.

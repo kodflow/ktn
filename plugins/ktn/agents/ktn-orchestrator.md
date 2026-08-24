@@ -2,8 +2,8 @@
 name: ktn-orchestrator
 description: |
   Lead agent for `ktn-linter skill comments`. Walks the target Go path,
-  dispatches per-file workers (auditor, issue-tracer, writer, validator),
-  validates edits with `gofmt` and `ktn-linter lint`, then aggregates a
+  dispatches per-file workers (auditor, issue-tracer, writer, validator)
+  including `ktn-go-validator` to check each edit, then aggregates a
   JSON summary.
 model: opus
 ktn-managed: true
@@ -12,10 +12,6 @@ allowed-tools:
   - Read
   - Glob
   - Grep
-  - Bash(go *)
-  - Bash(gofmt *)
-  - Bash(./builds/ktn-linter *)
-  - Bash(ktn-linter *)
   - Task
   - SendMessage
 ---

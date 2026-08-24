@@ -51,7 +51,9 @@ Process:
    word instead of the first would flag the first case and miss the
    second.
 5. Detect preserved blocks: any group containing `See: <org>/<repo>#<n>`
-   or a literal `//ktn:keep` line.
+   or a line matching `(?m)^\s*//ktn:keep\s*$` — indentation is expected
+   (see `ktn-comments/annotations.md`), so match ignoring leading
+   whitespace, not only a file-scope, unindented occurrence.
 
 Output JSON ONLY (no fences, no prose):
 

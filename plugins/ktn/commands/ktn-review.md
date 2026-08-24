@@ -25,10 +25,11 @@ informational only, not something this skill acts on.
 
 Otherwise, dispatch `ktn-review-orchestrator` with both file paths. It
 works the phases in the order `pipeline.md` describes — structural phases
-sequentially with a re-scan between each, later phases fanned out per
-package — and validates every fix with `ktn-go-validator` before moving
-on, retrying a failed fix against `ktn-violation-fixer` up to twice before
-reporting it unresolved.
+sequentially with a re-scan between each, later phases fanned out by
+each chain's touched-file set once the tracer finds its call sites — and
+validates every fix with `ktn-go-validator` before moving on, retrying a
+failed fix against `ktn-violation-fixer` up to twice before reporting it
+unresolved.
 
 After the orchestrator returns, output a JSON summary:
 
@@ -36,7 +37,13 @@ After the orchestrator returns, output a JSON summary:
 {
   "phases_completed": <int>,
   "violations_fixed": <int>,
-  "violations_unresolved": [{"file": "...", "rule": "...", "reason": "..."}],
+  "violations_unresolved": [{"file": "...", "rule": "...", "message": "...", "reason": "..."}],
   "files_touched": ["..."]
 }
 ```
+
+`message` is the original diagnostic text (rule + file + message is the
+unresolved-violation fingerprint `pipeline.md`'s Phase 6 convergence
+loop uses — deliberately not line number, which a later fix elsewhere
+in the file can shift); `reason` explains why it stayed unresolved
+(e.g. "gofmt failure persisted after 2 retries").

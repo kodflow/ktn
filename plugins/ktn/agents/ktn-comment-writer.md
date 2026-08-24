@@ -30,8 +30,10 @@ Rules (cf. `doctrine.md`):
 - Reference symbols with `[Name]` or `[pkg.Name]`.
 - Block-intention comments inside a function: prefix `//:` and start
   with an action verb.
-- NEVER touch a comment group that contains `See: <repo>#<n>` or a
-  literal `//ktn:keep` line.
+- NEVER touch a comment group that contains `See: <repo>#<n>` or a line
+  matching `(?m)^\s*//ktn:keep\s*$` — this pragma is commonly indented
+  (inside a function, above a struct field), so match ignoring leading
+  whitespace, not only an unindented occurrence.
 - NEVER add filler ("This function does ...", "Method to ...").
 - Do not invent behavior — describe only what the code actually does.
 

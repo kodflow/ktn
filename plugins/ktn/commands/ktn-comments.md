@@ -3,8 +3,8 @@ name: ktn-comments
 description: |
   Refactor Go doc-comments to the canonical go.dev/doc/comment style.
   Drops Javadoc-style Params:/Returns: blocks. Preserves `//:` intention
-  markers and `See: <repo>#<n>` issue annotations. Run via
-  `ktn:ktn-comments [path]`.
+  markers and `See: <repo>#<n>` issue annotations. Run via `ktn:ktn-comments
+  [path]`.
 ktn-managed: true
 ---
 

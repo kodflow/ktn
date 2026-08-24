@@ -10,8 +10,8 @@ teamSafe: true
 allowed-tools:
   - Read
   - Grep
-  - Bash(./builds/ktn-linter *)
-  - Bash(ktn-linter *)
+  - Bash(./builds/ktn-linter rules *)
+  - Bash(ktn-linter rules *)
 ---
 
 # ktn-violation-auditor — turn a violation into a fix brief
