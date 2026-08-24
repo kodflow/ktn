@@ -4,6 +4,41 @@ Public distribution channel for [ktn-linter](https://github.com/kodflow/ktn-lint
 a strict Go linter. This repository carries no source code: it holds the
 universal installer and the prebuilt release binaries.
 
+## Continuous integration
+
+```yaml
+- uses: kodflow/ktn/setup@main
+  with:
+    license-key: ${{ secrets.KTN_LICENSE_KEY }}
+
+- run: ktn-linter run ./...
+```
+
+One input, deliberately. The subject UUID lives in the key's comment and the
+public half is derivable from it, so passing them separately would only be
+repeating what the key already says — and giving you three things to keep in
+sync instead of one.
+
+The action installs the linter, activates the licence, and verifies it against
+the published roster before your workflow continues. It fails there rather than
+several steps later inside a lint run, because a licence problem and a lint
+failure read nothing alike in a log.
+
+### Getting a key for CI
+
+Run `ktn-linter license create` and open the issue it prints. **Use a subject
+dedicated to CI rather than reusing a developer's**: a key in repository
+secrets is readable by every workflow and by everyone with write access, so
+you want to be able to revoke it without taking a person offline with it.
+
+Store the private key exactly as written, newlines included:
+
+```bash
+gh secret set KTN_LICENSE_KEY < ~/.ssh/<your-uuid>
+```
+
+The key must not be passphrase-protected — CI has nobody to type it.
+
 ## Installation
 
 ```bash
