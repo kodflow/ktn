@@ -37,8 +37,10 @@ For phases 1-3 (structural, signatures, logic):
    classification as input, so it cannot start until the auditor
    returns. Then dispatch `ktn-violation-tracer` with the auditor's
    report, and `ktn-violation-fixer` with both.
-3. Hand every touched file to `ktn-go-validator`, scoped to the rule or
-   phase just fixed. Loop back to `ktn-violation-fixer` with the
+3. Hand every touched file's **owning package** (not the bare file — a
+   file-scoped target makes `ktn-go-validator` skip `go build`/`go test`
+   entirely, per its own contract) to `ktn-go-validator`, scoped to the
+   rule or phase just fixed. Loop back to `ktn-violation-fixer` with the
    diagnostic on failure (max 2 retries per violation).
 4. Before moving to the next phase, re-run `ktn-linter prompt <path>` —
    not `ktn-linter run`, which only prints diagnostics and never rewrites
@@ -56,10 +58,15 @@ For phases 4-8 (performance, modern, style, comment, tests):
    change can surface a call site in another package even here — "no
    cross-file risk" describes what these phases' *violations* require,
    not what *fixing* one can touch once the tracer is involved.
-3. Dispatch `ktn-violation-fixer` then `ktn-go-validator` per chain.
-   Run chains in parallel only when their touched-file sets are
-   disjoint; serialize any two chains that share a file, regardless of
-   which packages they were grouped under.
+3. Dispatch `ktn-violation-fixer` for the chain, then `ktn-go-validator`
+   once per distinct package the chain touched (its own package plus
+   any call-site packages the tracer found) — `ktn-go-validator` takes
+   one file-or-package target per invocation, so a multi-package chain
+   needs one dispatch per package, each targeting the package itself
+   (not a bare file) so `go build`/`go test` actually run. Run chains in
+   parallel only when their touched-file sets are disjoint; serialize
+   any two chains that share a file, regardless of which packages they
+   were grouped under.
 
 You MUST NOT edit code yourself — your role is dispatch + aggregation;
 this is enforced by your own tool grant, not just this instruction.
