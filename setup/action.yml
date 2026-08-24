@@ -1,0 +1,100 @@
+name: Setup ktn-linter
+description: Install ktn-linter and activate its licence, so a workflow can run the linter.
+
+# One required input by design. The subject UUID is carried inside the private
+# key's comment and the public half is derivable from it, so asking for either
+# separately would be asking the caller to repeat what the key already says —
+# and to keep three things in sync instead of one.
+
+inputs:
+  license-key:
+    description: >-
+      The licence private key, exactly as `ktn-linter license create` wrote it.
+      Store it in a repository secret and pass it as `${{ secrets.KTN_LICENSE_KEY }}`.
+    required: true
+  version:
+    description: Release tag to install. Defaults to the latest published build.
+    required: false
+    default: latest
+
+outputs:
+  subject:
+    description: The licence subject (UUID) that was activated.
+    value: ${{ steps.activate.outputs.subject }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install ktn-linter
+      shell: bash
+      env:
+        KTN_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # install.sh verifies the published checksum before extracting, so the
+        # download does not have to be trusted on its own.
+        curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Activate the licence
+      id: activate
+      shell: bash
+      env:
+        LICENSE_KEY: ${{ inputs.license-key }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${LICENSE_KEY}" ]; then
+          echo "::error::license-key is empty. Pass the key from a repository secret."
+          exit 1
+        fi
+
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+
+        # Stage under a neutral name first: the final filename must be the
+        # subject UUID, and that is read out of the key itself.
+        staged=$(mktemp "$HOME/.ssh/ktn-staged.XXXXXX")
+        printf '%s\n' "${LICENSE_KEY}" > "$staged"
+        chmod 600 "$staged"
+
+        # The comment is `ktn-linter licence <uuid>`; ssh-keygen -y prints it
+        # after the key material. Deriving the identity here is what keeps the
+        # action to a single input.
+        if ! pub=$(ssh-keygen -y -f "$staged" 2>/dev/null); then
+          rm -f "$staged"
+          echo "::error::license-key is not a usable private key (a passphrase-protected key cannot be used in CI)."
+          exit 1
+        fi
+
+        subject=$(printf '%s' "$pub" | awk '{print $NF}')
+        if ! printf '%s' "$subject" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+          rm -f "$staged"
+          echo "::error::cannot read a subject UUID from the key comment — was it created by \`ktn-linter license create\`?"
+          exit 1
+        fi
+
+        mv "$staged" "$HOME/.ssh/${subject}"
+        printf '%s\n' "$pub" > "$HOME/.ssh/${subject}.pub"
+        chmod 644 "$HOME/.ssh/${subject}.pub"
+
+        echo "subject=${subject}" >> "$GITHUB_OUTPUT"
+        echo "Activated licence subject ${subject}"
+
+    - name: Verify the licence against the published roster
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Fail here rather than three steps later inside a lint run: a licence
+        # problem and a lint failure look nothing alike to whoever reads the log,
+        # and this is the only place that can say which one it is.
+        if ! status=$(ktn-linter license status 2>&1); then
+          echo "::error::licence verification failed."
+          printf '%s\n' "$status"
+          exit 1
+        fi
+        printf '%s\n' "$status"
+        if ! printf '%s' "$status" | grep -q 'Status:  valid'; then
+          echo "::error::the licence is not valid — see the status above."
+          exit 1
+        fi
