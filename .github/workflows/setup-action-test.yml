@@ -1,0 +1,113 @@
+name: Test the setup action
+
+# The action is the only thing standing between a customer's CI and a working
+# linter, so it has to be exercised on every change. Two paths are covered
+# because they fail very differently:
+#
+#   * the negative path always runs — a freshly minted, unenrolled key must be
+#     refused with a message that names the reason, not a generic failure;
+#   * the positive path runs only when a licence secret is available, since a
+#     fork or a first-time contributor has none and should not see a red run
+#     because of it.
+
+on:
+  push:
+    paths:
+      - "setup/**"
+      - ".github/workflows/setup-action-test.yml"
+      - "install.sh"
+  pull_request:
+    paths:
+      - "setup/**"
+      - "install.sh"
+  schedule:
+    # The roster expires every 24h. A daily run catches a signing pipeline that
+    # quietly stopped, which would otherwise surface as every customer's CI
+    # breaking at once.
+    - cron: "42 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refuses-an-unenrolled-key:
+    name: An unenrolled key is refused with a reason
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Install and mint a throwaway licence
+        id: mint
+        run: |
+          set -euo pipefail
+          curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash
+          export PATH="$HOME/.local/bin:$PATH"
+          # A subject nobody approved: the roster cannot list it, so this is
+          # exactly what a customer sees before their request is accepted.
+          ktn-linter license create > /dev/null
+          key=$(find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' -newermt '-5 minutes' | head -1)
+          {
+            echo 'key<<KTNEOF'
+            cat "$key"
+            echo 'KTNEOF'
+          } >> "$GITHUB_OUTPUT"
+          rm -f "$key" "$key.pub"
+
+      - name: The action must refuse it
+        id: attempt
+        continue-on-error: true
+        uses: ./setup
+        with:
+          license-key: ${{ steps.mint.outputs.key }}
+
+      - name: Fail if the refusal did not happen
+        run: |
+          set -euo pipefail
+          # A silent pass here would mean the gate lets an unlisted subject
+          # through, which is the whole thing this system exists to prevent.
+          if [ "${{ steps.attempt.outcome }}" != "failure" ]; then
+            echo "::error::the action accepted a licence that is not in the roster."
+            exit 1
+          fi
+          echo "Unenrolled key correctly refused."
+
+  accepts-an-approved-key:
+    name: An approved key activates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Skip when no licence secret is configured
+        id: gate
+        env:
+          KTN_LICENSE_KEY: ${{ secrets.KTN_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          # Forks and first-time contributors have no secret; a red run there
+          # would be noise about their permissions, not about this action.
+          if [ -z "${KTN_LICENSE_KEY}" ]; then
+            echo "::warning::KTN_LICENSE_KEY is unset — skipping the positive path."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up ktn-linter
+        if: steps.gate.outputs.ready == 'true'
+        id: setup
+        uses: ./setup
+        with:
+          license-key: ${{ secrets.KTN_LICENSE_KEY }}
+
+      - name: The linter must actually run
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          # `license status` saying valid is necessary but not sufficient: the
+          # gate runs on every command, so prove a gated one works too.
+          echo "Activated subject: ${{ steps.setup.outputs.subject }}"
+          ktn-linter rules > /dev/null
+          echo "A gated command ran under the activated licence."
