@@ -8,7 +8,7 @@ description: |
 ktn-managed: true
 ---
 
-# /ktn-review — KTN Violation Review & Fix
+# ktn:ktn-review — KTN Violation Review & Fix
 
 Read the doctrine in `ktn-review/doctrine.md` and the pipeline in
 `ktn-review/pipeline.md` before touching anything — they define what a

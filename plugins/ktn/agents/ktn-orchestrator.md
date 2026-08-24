@@ -12,12 +12,10 @@ allowed-tools:
   - Read
   - Glob
   - Grep
-  - Edit
-  - Bash(go:*)
-  - Bash(gofmt:*)
-  - Bash(git:*)
-  - Bash(./builds/ktn-linter:*)
-  - Bash(ktn-linter:*)
+  - Bash(go *)
+  - Bash(gofmt *)
+  - Bash(./builds/ktn-linter *)
+  - Bash(ktn-linter *)
   - Task
   - SendMessage
 ---
@@ -41,7 +39,8 @@ For every Go file in scope:
    loop back to `ktn-comment-writer` with them as feedback (max 2 retries
    per file).
 
-You MUST NOT edit code yourself — your role is dispatch + aggregation.
+You MUST NOT edit code yourself — your role is dispatch + aggregation;
+this is enforced by your own tool grant, not just this instruction.
 
 When all files are processed, emit the final JSON summary to stdout in
 the schema documented in `pipeline.md`. Do not include free-form prose

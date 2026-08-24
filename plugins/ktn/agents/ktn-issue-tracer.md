@@ -10,7 +10,7 @@ teamSafe: true
 allowed-tools:
   - Read
   - Grep
-  - Bash(git:*)
+  - Bash(git blame *)
 ---
 
 # ktn-issue-tracer — annotations + git history

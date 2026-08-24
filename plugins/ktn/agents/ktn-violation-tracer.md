@@ -12,7 +12,7 @@ allowed-tools:
   - Read
   - Grep
   - Glob
-  - Bash(git:*)
+  - Bash(git blame *)
 ---
 
 # ktn-violation-tracer — history + blast radius

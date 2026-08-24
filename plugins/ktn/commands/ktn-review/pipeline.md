@@ -3,7 +3,7 @@ name: ktn-review-pipeline
 ktn-managed: true
 ---
 
-# Pipeline — `/ktn-review`
+# Pipeline — `ktn:ktn-review`
 
 Phases run by `ktn-review-orchestrator`. Unlike `ktn-comments` (which
 discovers its own targets via `Glob`), discovery is already done by
@@ -25,8 +25,11 @@ Read both generated files. Violations are already grouped by KTN phase
 can move or delete a file another phase's violation still points at — so
 they run **sequentially**, one phase fully resolved and re-verified
 before the next starts. Phases 4-8 (performance, modern, style, comment,
-tests) are independent of each other and of file layout, so they run
-**in parallel**, one worker per package.
+tests) don't restructure files, but a rename or signature change can
+still surface a call site in another package once the tracer looks —
+schedule these by each chain's actual touched-file set (violation file
+plus tracer-found call sites), not blindly by package: two chains run
+**in parallel** only when their touched-file sets are disjoint.
 
 ## Phase 2 — Audit (per phase, per package within a parallel phase)
 
@@ -72,7 +75,13 @@ come from a fresh generation, not the one read at Phase 1.
 
 ## Phase 6 — Report
 
-Aggregate into the JSON summary documented in `ktn-review.md`. Then loop:
-re-run `ktn-linter prompt [path]`; if violations remain, a fresh plan is
-generated automatically and Phase 1 resumes on the new context. Repeat
-until 0 violations or nothing further converges.
+Aggregate into the JSON summary documented in `ktn-review.md`, carrying
+forward every violation already marked `unresolved` in an earlier pass
+of this same run — its retry budget is spent, and re-running
+`ktn-linter prompt` will surface it again verbatim. Then loop: re-run
+`ktn-linter prompt [path]`; if violations remain, exclude any that match
+an already-`unresolved` fingerprint (rule + file + line) and resume
+Phase 1 on the rest. Stop when 0 violations remain, or when a full pass
+resolves nothing new (every remaining violation is already
+`unresolved`) — re-running prompt and resuming Phase 1 forever on a
+violation that cannot converge is not progress.

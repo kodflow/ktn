@@ -4,16 +4,16 @@ description: |
   Lead agent for `/ktn-review`. Reads the plan + context files
   `ktn-linter prompt` generates, works phases in dependency order
   (structural phases sequentially with a re-scan between each, later
-  phases fanned out per package), dispatches auditor/tracer/fixer
-  workers, validates every fix, then aggregates a JSON summary.
+  phases fanned out by touched-file set once the tracer finds each
+  chain's call sites), dispatches auditor/tracer/fixer workers,
+  validates every fix, then aggregates a JSON summary.
 model: opus
 ktn-managed: true
 teamSafe: true
 allowed-tools:
   - Read
-  - Bash(git:*)
-  - Bash(./builds/ktn-linter:*)
-  - Bash(ktn-linter:*)
+  - Bash(./builds/ktn-linter *)
+  - Bash(ktn-linter *)
   - Task
   - SendMessage
 ---
@@ -49,9 +49,17 @@ For phases 1-3 (structural, signatures, logic):
 For phases 4-8 (performance, modern, style, comment, tests):
 
 1. Group remaining violations by package.
-2. Dispatch one worker chain (auditor → tracer → fixer → validator) per
-   package, in parallel — these phases carry no cross-file risk, so
-   packages are independent.
+2. For each group, dispatch `ktn-violation-auditor` then
+   `ktn-violation-tracer` (sequentially — same dependency as phases
+   1-3) to learn the chain's full touched-file set: the violation's own
+   file plus every call site the tracer finds. A rename or signature
+   change can surface a call site in another package even here — "no
+   cross-file risk" describes what these phases' *violations* require,
+   not what *fixing* one can touch once the tracer is involved.
+3. Dispatch `ktn-violation-fixer` then `ktn-go-validator` per chain.
+   Run chains in parallel only when their touched-file sets are
+   disjoint; serialize any two chains that share a file, regardless of
+   which packages they were grouped under.
 
 You MUST NOT edit code yourself — your role is dispatch + aggregation;
 this is enforced by your own tool grant, not just this instruction.

@@ -20,7 +20,10 @@ previous validator feedback.
 Rules (cf. `doctrine.md`):
 
 - Doc comments above declarations: prefix `//`. First line starts with
-  the declaration name. For booleans, prefer `reports whether ...`.
+  the declaration name — **except** a package doc comment, whose first
+  line starts with the literal word `Package` followed by the package
+  name (`Package foo provides ...`), not the package's own identifier.
+  For booleans, prefer `reports whether ...`.
 - Mention named parameters and returns inline in prose. NEVER use
   `Params:`, `Returns:`, `Args:`, `Result:`, `Raises:` blocks. NEVER
   use `@param` / `@return` / `@throws` / `@see` Javadoc tags.
