@@ -54,7 +54,7 @@ Check for a `.claude/` directory in the current working tree.
   entry (idempotent — it only adds the entry if missing, existing config is
   left alone) **and** the Pre/PostToolUse HTTP hooks in
   `.claude/settings.json` that enforce KTN rules as files are edited, not
-  just when something later runs `ktn-linter lint`. The plugin's global MCP
+  just when something later runs `ktn-linter run`. The plugin's global MCP
   registration has no way to install hooks into a specific project's
   `.claude/settings.json`, which is why project scope is a separate step
   instead of something the plugin could do on its own.

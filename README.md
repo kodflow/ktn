@@ -32,10 +32,17 @@ This repository also serves as a Claude Code plugin marketplace:
 ```
 
 The plugin registers the `ktn-linter` MCP server (live diagnostics as you
-edit) and installs the `ktn:ktn` skill, which gets the binary itself onto
-`PATH` and, for a project that wants its own edit-time enforcement hooks
-rather than relying on the plugin alone, wires it locally. See
-[`install/README.md`](install/README.md) for the exact procedure.
+edit) and installs three things:
+
+- The `ktn:ktn` skill, which gets the binary itself onto `PATH` and, for a
+  project that wants its own edit-time enforcement hooks rather than
+  relying on the plugin alone, wires it locally. See
+  [`install/README.md`](install/README.md) for the exact procedure.
+- `ktn:ktn-review [path]` — reviews and fixes violations across all 446
+  rules, phase by phase, using the plan `ktn-linter prompt` already
+  generates.
+- `ktn:ktn-comments [path]` — refactors Go doc-comments to the canonical
+  `go.dev/doc/comment` style.
 
 ## Releases
 
@@ -50,7 +57,7 @@ installing something else. Release candidates are never published here.
 ## Usage
 
 ```bash
-ktn-linter lint ./...
+ktn-linter run ./...
 ```
 
 ## Rules

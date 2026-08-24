@@ -8,7 +8,7 @@
     {
       "name": "ktn",
       "source": "./plugins/ktn",
-      "description": "Wires the ktn-linter MCP server into Claude Code and includes the /ktn skill that installs or upgrades the ktn-linter binary."
+      "description": "Wires the ktn-linter MCP server into Claude Code; includes the ktn:ktn skill that installs or upgrades the ktn-linter binary, ktn:ktn-review to review and fix violations across all 446 rules, and ktn:ktn-comments to refactor Go doc-comments to the canonical style."
     }
   ]
 }
