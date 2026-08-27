@@ -244,9 +244,12 @@ jobs:
   sign:
     name: Re-sign the roster
     runs-on: ubuntu-latest
-    # Runs after a publish, after a revoke, and on the schedule. `always()`
-    # keeps the scheduled path alive even though publish/revoke are skipped
-    # there — and keeps this alive when the OTHER one of the pair skipped.
+    # Runs after a publish, after a revoke, after a version is recorded, and
+    # on the schedule. `always()` is what keeps it alive on the paths where
+    # the jobs it needs are SKIPPED rather than failed: on the schedule all
+    # three are, and on an issue event two of the three always are. Without
+    # it, GitHub would skip this job along with them and the roster would
+    # never be re-signed at all.
     needs: [publish, revoke, record-version]
     if: >-
       always() &&
