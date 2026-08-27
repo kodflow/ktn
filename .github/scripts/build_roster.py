@@ -57,6 +57,22 @@ def subject_value(pub: pathlib.Path, state_dir: pathlib.Path) -> dict:
     return value
 
 
+def required_version(state_dir: pathlib.Path) -> str:
+    """Read the mandatory-update floor, or "" when none is set.
+
+    The file is written by the release pipeline after a build reaches the
+    public mirror, which is what keeps the floor and the downloadable release
+    in step. Publishing a floor no release satisfies would block every client
+    with nothing to upgrade to, so the ORDER matters: mirror first, floor
+    second.
+    """
+    path = state_dir / "required-version.txt"
+    # No file is the normal state until the first release publishes one.
+    if not path.exists():
+        return ""
+    return path.read_text().strip()
+
+
 def main() -> None:
     licenses_path = licenses_dir()
     # A fresh state branch has no keys until the first subject is published;
@@ -75,6 +91,23 @@ def main() -> None:
         "exp": (now + datetime.timedelta(hours=LIFETIME_HOURS)).isoformat().replace("+00:00", "Z"),
         "subjects": subjects,
     }
+
+    # The mandatory-update floor. It is carried by the roster because the
+    # roster is the one document every client already fetches on a cold start
+    # and already authenticates: a floor published here cannot be skipped by
+    # going offline nor forged by redirecting the endpoint.
+    #
+    # Its value is written by the release pipeline, not by hand — "updates are
+    # mandatory as soon as one exists" is only true if nobody has to remember
+    # to raise it. required-version.txt is a one-line file on this branch that
+    # the mirror sync updates after publishing.
+    #
+    # Omitted entirely when absent: an empty "minv" and a missing one mean the
+    # same thing to the client (no floor), and leaving the key out keeps the
+    # signed bytes identical to what older rosters looked like.
+    required = required_version(licenses_path)
+    if required:
+        roster["minv"] = required
     # Separators without spaces keep the signed bytes stable: the signature
     # covers the exact serialisation, so cosmetic formatting changes would
     # invalidate it.

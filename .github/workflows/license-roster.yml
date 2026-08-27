@@ -38,6 +38,14 @@ name: Licence roster
 # made, since that's the check nothing can route around.
 
 on:
+  # The mirror sync fires this after publishing a release, with the tag as
+  # client_payload.version. That is what makes "updates are mandatory as soon
+  # as one exists" true without anyone remembering to raise a number: the
+  # floor is written by the same pipeline that publishes the build, in that
+  # order — mirror first, floor second, so a floor never demands a version
+  # nobody can download yet.
+  repository_dispatch:
+    types: [release-published]
   issues:
     types: [labeled, opened]
   schedule:
@@ -195,18 +203,58 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --body "Revoked. This subject drops out of the roster on the next signature (within the hour)."
 
+  record-version:
+    name: Record the required version
+    runs-on: ubuntu-latest
+    if: github.event_name == 'repository_dispatch'
+    steps:
+      - name: Checkout the licence state
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: licenses
+          path: state
+
+      - name: Write the floor
+        working-directory: state
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
+        run: |
+          set -euo pipefail
+          # A dispatch without a version would blank the floor and silently
+          # disable mandatory updates, which is the failure nobody notices.
+          if [ -z "${VERSION}" ]; then
+            echo "::error::release-published carried no version — refusing to clear the floor."
+            exit 1
+          fi
+          # Shape check: the floor is compared with SemVer, and a malformed
+          # value fails open on every client. Catch it here, where it is one
+          # workflow run, rather than there, where it is silent.
+          if ! printf '%s' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::${VERSION} is not a SemVer tag — refusing to publish an unusable floor."
+            exit 1
+          fi
+          printf '%s\n' "${VERSION}" > required-version.txt
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add required-version.txt
+          git diff --cached --quiet || git commit -m "licence: require ${VERSION}"
+          git push origin HEAD:licenses
+
   sign:
     name: Re-sign the roster
     runs-on: ubuntu-latest
     # Runs after a publish, after a revoke, and on the schedule. `always()`
     # keeps the scheduled path alive even though publish/revoke are skipped
     # there — and keeps this alive when the OTHER one of the pair skipped.
-    needs: [publish, revoke]
+    needs: [publish, revoke, record-version]
     if: >-
       always() &&
-      (github.event_name != 'issues' ||
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
        needs.publish.result == 'success' ||
-       needs.revoke.result == 'success')
+       needs.revoke.result == 'success' ||
+       needs['record-version'].result == 'success')
     steps:
       - name: Checkout the scripts
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
