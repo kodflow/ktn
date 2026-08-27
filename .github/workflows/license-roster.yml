@@ -309,6 +309,17 @@ jobs:
             -in state/roster.json -sigfile state/roster.json.sig
           rm -f /tmp/vendor.pub
 
+      # Clients fetch ONE document. Two objects cannot be fetched atomically:
+      # raw.githubusercontent.com caches each with max-age=300, so for up to
+      # five minutes after every signature a client could receive a new
+      # signature over an old roster — indistinguishable from forgery, and
+      # with hourly signing that is roughly 8% of all wall-clock time.
+      - name: Bundle the signed pair
+        if: hashFiles('state/roster.json.sig') != ''
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/bundle_roster.py
+
       - name: Commit the signed pair
         if: hashFiles('state/roster.json.sig') != ''
         working-directory: state
@@ -316,7 +327,9 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add roster.json roster.json.sig
+          # The bundle is what clients read; the loose pair stays published
+          # for humans and for `openssl pkeyutl -verify`.
+          git add roster.json roster.json.sig roster.signed.json
           # A no-op run is normal when nothing changed and the window has not
           # moved enough to matter; do not fail the schedule over it.
           git diff --cached --quiet || git commit -m "licence: re-sign roster"
