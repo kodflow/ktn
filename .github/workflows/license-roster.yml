@@ -49,9 +49,17 @@ on:
   issues:
     types: [labeled, opened]
   schedule:
-    # Hourly, off the :00 mark to stay out of the cron stampede. The window is
-    # 24h, so a missed run is harmless; a day of missed runs is not.
-    - cron: "17 * * * *"
+    # Every 20 minutes, off the :00 mark to stay out of the cron stampede.
+    #
+    # Hourly was the original choice and it left too thin a margin against a
+    # scheduler that does not promise to run: GitHub delays scheduled runs and
+    # drops them under load, and two consecutive hourly slots were observed
+    # missed on this very workflow. The window is 24h, so a missed run is
+    # harmless and a day of missed runs is not — three chances an hour makes
+    # the second outcome need roughly 72 misses in a row rather than 24.
+    #
+    # The cost is nil: a run that changes nothing commits nothing.
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -270,6 +278,14 @@ jobs:
           ref: licenses
           path: state
 
+      # Checked BEFORE rebuilding: this reads the roster about to be replaced,
+      # which is the only moment its remaining life is still observable.
+      - name: Check how much life the previous roster had left
+        id: freshness
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/check_freshness.py
+
       - name: Build the roster
         env:
           LICENSES_DIR: state
@@ -337,3 +353,30 @@ jobs:
           # moved enough to matter; do not fail the schedule over it.
           git diff --cached --quiet || git commit -m "licence: re-sign roster"
           git push origin HEAD:licenses
+
+      # A roster that got this close to expiring means signatures have been
+      # missing for most of a day. Say so loudly: the outage this repository
+      # already had was invisible for thirteen hours precisely because a
+      # failing cron on a quiet repository looks like a quiet repository. An
+      # issue is the one channel that reaches a human without them going to
+      # look for it.
+      - name: Raise the alarm if signatures had been missing
+        if: steps.freshness.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOURS_LEFT: ${{ steps.freshness.outputs.hours_left }}
+        run: |
+          set -euo pipefail
+          # One issue, not one per run: the condition persists across runs and
+          # a new issue every 20 minutes would bury the first one.
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title licence: roster nearly expired" --json number \
+            --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${{ github.repository }}" \
+              --body "Still degraded: ${HOURS_LEFT}h of window left at the last signature."
+            exit 0
+          fi
+          gh issue create --repo "${{ github.repository }}" \
+            --title "licence: roster nearly expired (${HOURS_LEFT}h left when re-signed)" \
+            --body-file .github/ROSTER_ALARM.md
