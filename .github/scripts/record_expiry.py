@@ -14,6 +14,19 @@ import pathlib
 import re
 import sys
 
+
+def licenses_dir() -> pathlib.Path:
+    """Where licence state lives.
+
+    Defaults to ``licenses/`` so the scripts stay runnable from a plain
+    checkout of ``main``. The workflow overrides it with ``LICENSES_DIR``
+    because the state now lives on its own branch, checked out into a
+    separate directory: ``main`` carries a required-status ruleset that
+    refuses a direct push, which silently stopped every re-signature for a
+    day and a half until the roster's window closed.
+    """
+    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+
 LABEL_RE = re.compile(r"^expireAt:(\d{4}-\d{2}-\d{2})$")
 DEFAULT_TERM = datetime.timedelta(days=365)
 
@@ -40,7 +53,7 @@ def main() -> None:
         expires_at = now + DEFAULT_TERM
 
     iso = expires_at.isoformat().replace("+00:00", "Z")
-    pathlib.Path(f"licenses/{uuid}.meta.json").write_text(
+    (licenses_dir() / f"{uuid}.meta.json").write_text(
         json.dumps({"expiresAt": iso}, indent=2, sort_keys=True) + "\n"
     )
     print(f"{uuid} expires {iso}")

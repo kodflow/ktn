@@ -4,6 +4,19 @@ name: Licence roster
 # signed with the vendor key held in this repository's secrets. Everything
 # else here is public on purpose: fingerprints and dates leak nothing.
 #
+# ALL licence state lives on the `licenses` branch, never on the default
+# branch. That is not tidiness: the default branch carries a required-status
+# ruleset, and a required status cannot be satisfied by a direct push — the
+# status does not exist yet when the push is evaluated. Every job below used
+# to push to `main`, and every one of them was refused outright with
+# "Required status check post-commit is expected". The hourly re-signature
+# stopped, the roster's 24h window closed behind it, and every licensed
+# binary refused to start until someone noticed a day and a half later.
+#
+# Licence state is data written by a machine every hour, not code that wants
+# review. It belongs on a branch under no code ruleset, and `main`'s history
+# is no longer buried under hourly "licence: re-sign roster" commits.
+#
 # One event, three action/label-gated jobs, plus the schedule:
 #   * a maintainer applying `license:approved` to a request publishes that
 #     subject's public key, with a term — one year by default, or whatever an
@@ -85,14 +98,24 @@ jobs:
     # Anyone may open an issue; nobody but a maintainer can make it count.
     if: github.event_name == 'issues' && github.event.label.name == 'license:approved'
     steps:
-      - name: Checkout
+      # The scripts live on the default branch; the state they read and write
+      # lives on `licenses`. Two checkouts, and LICENSES_DIR points every
+      # script at the second one.
+      - name: Checkout the scripts
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Checkout the licence state
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: licenses
+          path: state
 
       - name: Extract and validate the request
         id: request
         env:
           BODY: ${{ github.event.issue.body }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          LICENSES_DIR: state
         run: python3 .github/scripts/parse_request.py
 
       - name: Publish the public key
@@ -103,23 +126,25 @@ jobs:
           # run: an expireAt: label only counts if it landed before (or with)
           # license:approved.
           LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
+          LICENSES_DIR: state
         run: |
           set -euo pipefail
-          mkdir -p licenses
-          mv /tmp/subject.pub "licenses/${UUID}.pub"
+          mkdir -p state
+          mv /tmp/subject.pub "state/${UUID}.pub"
           python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}"
           python3 .github/scripts/record_expiry.py "${UUID}"
 
       - name: Commit
+        working-directory: state
         env:
           UUID: ${{ steps.request.outputs.uuid }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add licenses/
+          git add -A
           git commit -m "licence: publish ${UUID}"
-          git push
+          git push origin HEAD:licenses
 
       - name: Close the request
         env:
@@ -134,8 +159,14 @@ jobs:
     # label event itself — and why, in whatever comment is on the issue).
     if: github.event_name == 'issues' && github.event.label.name == 'license:revoked'
     steps:
-      - name: Checkout
+      - name: Checkout the scripts
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Checkout the licence state
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: licenses
+          path: state
 
       - name: Resolve the subject
         id: subject
@@ -144,6 +175,7 @@ jobs:
         run: python3 .github/scripts/revoke_subject.py
 
       - name: Remove the public key
+        working-directory: state
         env:
           UUID: ${{ steps.subject.outputs.uuid }}
         run: |
@@ -153,10 +185,10 @@ jobs:
           # owners.json is untouched on purpose: the uuid stays bound to its
           # original owner so a future re-enrolment can't be squatted by
           # someone else, even after this subject is revoked.
-          rm -f "licenses/${UUID}.pub" "licenses/${UUID}.meta.json"
-          git add licenses/
+          rm -f "${UUID}.pub" "${UUID}.meta.json"
+          git add -A
           git diff --cached --quiet || git commit -m "licence: revoke ${UUID}"
-          git push
+          git push origin HEAD:licenses
 
       - name: Note the revocation
         env:
@@ -176,14 +208,20 @@ jobs:
        needs.publish.result == 'success' ||
        needs.revoke.result == 'success')
     steps:
-      - name: Checkout
+      - name: Checkout the scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Checkout the licence state
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          # The publish job just pushed; without a fresh ref the signature
-          # would cover the previous roster.
-          ref: main
+          # The publish job just pushed to this branch; without a fresh
+          # checkout the signature would cover the previous roster.
+          ref: licenses
+          path: state
 
       - name: Build the roster
+        env:
+          LICENSES_DIR: state
         run: python3 .github/scripts/build_roster.py
 
       - name: Sign it
@@ -204,17 +242,34 @@ jobs:
           # mode rather than pre-hashing, and it must match what the binary
           # verifies.
           openssl pkeyutl -sign -rawin -inkey /tmp/vendor.pem \
-            -in licenses/roster.json -out licenses/roster.json.sig
+            -in state/roster.json -out state/roster.json.sig
           rm -f /tmp/vendor.pem
 
+          # Verify what was just produced, before publishing it. A signature
+          # the binary would reject is worse than none: it publishes cleanly,
+          # every client refuses, and this workflow still reports success —
+          # which is exactly how a silent outage lasts a day and a half.
+          #
+          # The private half is re-written to a real file rather than passed
+          # through a process substitution: openssl reads some key formats
+          # with seeks, and a pipe cannot be rewound.
+          printf '%s' "${SIGNING_KEY}" > /tmp/vendor-verify.pem
+          chmod 600 /tmp/vendor-verify.pem
+          openssl pkey -in /tmp/vendor-verify.pem -pubout -out /tmp/vendor.pub
+          rm -f /tmp/vendor-verify.pem
+          openssl pkeyutl -verify -rawin -pubin -inkey /tmp/vendor.pub \
+            -in state/roster.json -sigfile state/roster.json.sig
+          rm -f /tmp/vendor.pub
+
       - name: Commit the signed pair
-        if: hashFiles('licenses/roster.json.sig') != ''
+        if: hashFiles('state/roster.json.sig') != ''
+        working-directory: state
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add licenses/roster.json licenses/roster.json.sig
+          git add roster.json roster.json.sig
           # A no-op run is normal when nothing changed and the window has not
           # moved enough to matter; do not fail the schedule over it.
           git diff --cached --quiet || git commit -m "licence: re-sign roster"
-          git push
+          git push origin HEAD:licenses
