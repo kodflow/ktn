@@ -11,6 +11,19 @@ import pathlib
 import re
 import sys
 
+
+def licenses_dir() -> pathlib.Path:
+    """Where licence state lives.
+
+    Defaults to ``licenses/`` so the scripts stay runnable from a plain
+    checkout of ``main``. The workflow overrides it with ``LICENSES_DIR``
+    because the state now lives on its own branch, checked out into a
+    separate directory: ``main`` carries a required-status ruleset that
+    refuses a direct push, which silently stopped every re-signature for a
+    day and a half until the roster's window closed.
+    """
+    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 # Only ed25519 is accepted: it is what `ktn-linter license create` mints, and
 # narrowing the accepted algorithms narrows what the verifier must handle.
@@ -56,7 +69,7 @@ def main() -> None:
     # subject already bound to someone else may only be rotated by that
     # account. Without this check an issue claiming a known uuid would swap
     # the key and hijack the licence.
-    owners_path = pathlib.Path("licenses/owners.json")
+    owners_path = licenses_dir() / "owners.json"
     owners = json.loads(owners_path.read_text() or "{}") if owners_path.exists() else {}
 
     recorded = owners.get(uuid)
