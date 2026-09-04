@@ -1,0 +1,22 @@
+# GitGuardian configuration.
+#
+# The licence chain deals in ssh-ed25519 lines by nature: parse_request.py
+# validates them, build_roster.py fingerprints them, and their tests have to
+# feed them something shaped like one. A fixture key trips the scanner on FORM
+# alone — the detector reads the algorithm prefix and base64 body, not what
+# they decode to — so the finding is unavoidable rather than a mistake to fix.
+#
+# Scoped to the test files only. The scanner still watches every script,
+# workflow and document in this repository, which is where a real key could
+# actually leak: the vendor signing key lives in repository secrets and is
+# written to /tmp inside the signing job, and nothing here should ever contain
+# a private half.
+#
+# The fixtures themselves are deliberately obvious: far too short to be a key,
+# and named so. See the comment on KEY in test_parse_request.py.
+version: 2
+
+secret:
+  ignored-paths:
+    - .github/scripts/test_parse_request.py
+    - .github/scripts/test_record_expiry.py

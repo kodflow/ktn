@@ -1,0 +1,36 @@
+name: Test the licence scripts
+
+# The scripts under .github/scripts are the approval chain: they decide who
+# gets published, for how long, and what the signed roster says. They had no
+# tests at all, and that is not an oversight anyone would have caught — it is
+# how `license update` came to grant a fresh 365-day term on every rotation,
+# making key rotation an indefinite free subscription. A workflow's own logic
+# is still logic, and this one carries the billing decision.
+#
+# No dependencies on purpose: stdlib unittest runs on the bare runner, so the
+# lane cannot rot behind a requirements file nobody updates.
+
+on:
+  push:
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/scripts-test.yml"
+  pull_request:
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/scripts-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Licence script unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Run the suite
+        run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
