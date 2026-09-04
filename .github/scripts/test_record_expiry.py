@@ -302,6 +302,33 @@ class MalformedStateTest(TermTestCase):
         with self.assertRaises(SystemExit):
             self.run_script(WIN)
 
+    def test_a_falsey_recorded_term_is_corruption_not_absence(self):
+        """A recorded null/0/"" must stop the run, never read as "no term".
+
+        Reading it as absence sends the account down the brand-new-licence
+        path and hands it a fresh year — the free-renewal outcome licences.json
+        exists to prevent, reachable by nothing more than a bad edit.
+        """
+        for falsey in (None, 0, "", False):
+            with self.subTest(recorded=falsey):
+                self.setUp()
+                self.bind(MAC)
+                (self.licenses / "licences.json").write_text(
+                    json.dumps({"kodflow": {"expiresAt": falsey}}) + "\n"
+                )
+
+                with self.assertRaises(SystemExit):
+                    self.run_script(MAC)
+
+    def test_a_falsey_sidecar_term_is_corruption_not_absence(self):
+        """Same reasoning on the device sidecar, which migration reads."""
+        self.bind(MAC)
+        (self.licenses / f"{MAC}.meta.json").write_text(json.dumps({"expiresAt": None}) + "\n")
+        self.bind(WIN)
+
+        with self.assertRaises(SystemExit):
+            self.run_script(WIN)
+
     def test_a_corrupt_sidecar_does_not_silently_renew(self):
         """Treating unreadable state as absent would turn corruption into a renewal."""
         self.bind(MAC)

@@ -168,6 +168,23 @@ class ParseRequestTest(unittest.TestCase):
 
         self.assertNotEqual(raised.exception.code, 0)
 
+    def test_a_boolean_quota_is_refused(self):
+        """bool is a subclass of int in Python.
+
+        `true` would otherwise pass the isinstance check and then behave as 1,
+        silently cutting an account down to a single device with no message
+        saying why.
+        """
+        for value in (True, False):
+            with self.subTest(quota=value):
+                self.setUp()
+                (self.licenses / "quotas.json").write_text(json.dumps({"kodflow": value}))
+
+                with self.assertRaises(SystemExit) as raised:
+                    self.run_script(MAC, "kodflow")
+
+                self.assertNotEqual(raised.exception.code, 0)
+
     def test_a_non_uuid_subject_is_refused(self):
         """The subject names a file path; anything but a canonical uuid is a lever."""
         with self.assertRaises(SystemExit):

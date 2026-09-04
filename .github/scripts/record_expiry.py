@@ -125,9 +125,12 @@ def adopt_existing_term(account: str) -> str:
         sidecar = licenses_dir() / f"{uuid}.meta.json"
         if not sidecar.exists():
             continue
-        recorded = json.loads(sidecar.read_text()).get("expiresAt")
-        if recorded:
-            terms.append(parse_term(recorded, str(sidecar)))
+        entry = json.loads(sidecar.read_text())
+        # Same reasoning as licence_term: a recorded-but-falsey term is corrupt
+        # state, not missing state, and must stop the run rather than silently
+        # drop out of the minimum below.
+        if "expiresAt" in entry:
+            terms.append(parse_term(entry["expiresAt"], str(sidecar)))
     return render(min(terms)) if terms else ""
 
 
@@ -135,11 +138,16 @@ def licence_term(account: str) -> str:
     """The account's term, or "" when it has never had one."""
     path = licenses_dir() / "licences.json"
     if path.exists():
-        recorded = json.loads(path.read_text() or "{}").get(account, {}).get("expiresAt")
-        if recorded:
+        entry = json.loads(path.read_text() or "{}").get(account, {})
+        # `in`, not truthiness. A recorded null, 0, false or "" is a corrupt
+        # entry, and treating it as absent would send this account down the
+        # brand-new-licence path and hand it a fresh year — the free-renewal
+        # outcome the whole file exists to prevent, reachable by nothing more
+        # than a bad edit.
+        if "expiresAt" in entry:
             # Validate on the way out: a hand-edited file must fail here rather
             # than reach the roster.
-            return render(parse_term(recorded, str(path)))
+            return render(parse_term(entry["expiresAt"], str(path)))
     # Nothing at the account level: either a brand-new licence, or one that
     # predates this file.
     return adopt_existing_term(account)

@@ -61,7 +61,11 @@ def max_devices(account: str) -> int:
     recorded = quotas.get(account, DEFAULT_MAX_DEVICES)
     # A malformed entry must not silently widen the quota to something
     # unbounded, nor narrow it to zero and lock the account out.
-    if not isinstance(recorded, int) or recorded < 1:
+    #
+    # bool is excluded explicitly because it is a subclass of int in Python:
+    # a quota of `true` would otherwise pass validation and then behave as 1,
+    # silently cutting an account down to a single device.
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded < 1:
         fail(f"quotas.json holds an invalid quota for @{account}: {recorded!r}")
     return recorded
 
