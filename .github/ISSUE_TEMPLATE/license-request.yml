@@ -1,5 +1,5 @@
 name: Licence request
-description: Request or rotate a licence for a ktn-linter subject.
+description: Enrol a new device, or rotate the key of an existing one.
 title: "licence: "
 labels: ["license:request"]
 body:
@@ -11,22 +11,29 @@ body:
         publishes the key below — anyone can open one of these; nothing
         happens until that label lands.
 
-        To set a term other than the one-year default, ask the maintainer to
-        add an `expireAt:YYYY-MM-DD` label before approving.
+        **One licence per account, three devices per licence.** Your laptop,
+        your desktop and one more machine each get their own key: the private
+        half never leaves the machine it was generated on, so a second
+        machine needs its own enrolment rather than a copy of the first one's
+        key.
 
-        One issue per account, for the life of the licence: rotations,
-        questions, eventual revocation — everything happens here, not in a
-        new issue. A second one gets closed automatically with a link back
-        to this one.
+        **One request at a time.** Open a separate issue for each device, but
+        wait for a decision before opening the next — a second request while
+        one is still pending gets closed with a pointer back to it.
+
+        Out of seats? Revoke a device you no longer use and its seat comes
+        back. To set a term other than the one-year default, ask the
+        maintainer to add an `expireAt:YYYY-MM-DD` label before approving —
+        note that a rotation never extends a term, only a maintainer can.
 
   - type: input
     id: subject
     attributes:
       label: Subject
       description: >-
-        Canonical v4 UUID identifying this subject. Generate one with
-        `ktn-linter license create`. Rotating an existing key re-uses the
-        same UUID.
+        Canonical v4 UUID identifying this DEVICE. Generate one with
+        `ktn-linter license create` on the machine being enrolled. Rotating an
+        existing device's key re-uses that device's UUID.
       placeholder: eb56f295-9428-49b1-9dc3-0ebc6e383444
     validations:
       required: true
@@ -41,3 +48,15 @@ body:
       placeholder: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
     validations:
       required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: >-
+        A short name for the machine, so you can tell your devices apart when
+        one of them has to be revoked. Free text — "mac", "work laptop",
+        "desktop".
+      placeholder: mac
+    validations:
+      required: false

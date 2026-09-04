@@ -37,30 +37,46 @@ Anyone with a GitHub account can ask for one; a maintainer decides.
 3. **Wait for approval.** Opening the issue does nothing by itself. A
    maintainer applies the `license:approved` label, which is what publishes
    your key. Until then `ktn-linter` reports that your licence is not listed.
-4. **It activates within the hour.** The roster is re-signed hourly; your
-   licence starts working at the next signature.
+4. **It activates within about 20 minutes.** The roster is re-signed three
+   times an hour; your licence starts working at the next signature.
 
-### One licence per account
+### One licence per account, three devices per licence
 
-An account may hold exactly one subject, for the life of the licence. A
-second request is refused, and the request issue stays open as the place
-where rotation, questions and eventual revocation all happen.
+The licence is the thing you hold: one per account, always. What it
+authorises is up to **three devices** — your laptop, your desktop, one more
+machine.
 
-**Rotating a lost key** reuses the same UUID: run `ktn-linter license update`
-and post the new key on your existing issue. Only the account the subject is
-bound to can rotate it, which is what stops someone claiming a UUID that is
-not theirs.
+Each device carries its own subject UUID and its own keypair, generated on
+that machine, and the private half never travels. That is not bookkeeping: a
+key copied between machines cannot be revoked on one without breaking the
+other, and it turns a stolen laptop into a problem for every machine you own.
+
+**Adding a device** is the same four steps as the first one, run on the new
+machine. Open a separate issue for it — one request at a time, so wait for a
+decision before opening the next.
+
+**A device inherits the licence's term.** A machine enrolled six months in
+expires with the rest, not a year later: one licence, one date, one renewal.
+
+**Out of seats?** Revoke a device you no longer use and its seat comes back
+immediately. Seats are counted from published keys, so a revoked device stops
+counting the moment the roster is re-signed.
+
+**Rotating a key** reuses that device's UUID: run `ktn-linter license update`
+on the machine and post the new key. Only the account the device is bound to
+can rotate it, which is what stops someone claiming a UUID that is not
+theirs. A rotation never extends your term — rotating a key and paying for
+another year are different acts.
 
 ### Getting a key for CI
 
 CI needs a private key in a repository secret, and a key in a secret is
 readable by every workflow and by everyone with write access.
 
-Because a GitHub account may hold only one subject, a *separate* CI subject
-means a separate GitHub account — a machine account you own. That is worth
-doing when a compromised secret must be revocable without taking a person
-offline with it. Otherwise, reuse your own key and accept that revoking it
-stops your CI too.
+Use one of your three device seats for CI rather than reusing a machine's
+key: a secret that leaks must be revocable without taking one of your real
+machines offline with it. Name it accordingly on the request, so the device
+you revoke later is the one you meant.
 
 Store the private key exactly as written, newlines included:
 
