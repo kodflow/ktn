@@ -31,6 +31,41 @@ permissions:
   contents: read
 
 jobs:
+  refuses-a-run-that-cannot-prove-itself:
+    name: A run with no key and no id-token is refused
+    runs-on: ubuntu-latest
+    # Deliberately WITHOUT `id-token: write`. The workflow-level permissions
+    # above are contents: read, so this job cannot mint an OIDC token — which
+    # is exactly the state being tested: no key, and no way to prove the run
+    # is CI.
+    #
+    # The positive case is not here on purpose. It needs the roster to carry a
+    # CI entitlement for this account, which only exists after an approval has
+    # recorded an account id; asserting it before then would be a lane that
+    # fails for a reason unrelated to the action.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: The action must refuse
+        id: attempt
+        continue-on-error: true
+        uses: ./setup
+
+      - name: Fail if the refusal did not happen
+        run: |
+          set -euo pipefail
+          # A pass here would mean the linter runs unlicensed whenever a
+          # workflow simply omits its credentials, which is the one outcome
+          # this whole system exists to prevent.
+          if [ "${{ steps.attempt.outcome }}" != "failure" ]; then
+            echo "::error::the action accepted a run that can prove nothing"
+            exit 1
+          fi
+          echo "Refused, as it must be."
+
   refuses-an-unenrolled-key:
     name: An unenrolled key is refused with a reason
     runs-on: ubuntu-latest

@@ -1,26 +1,48 @@
 name: Setup ktn-linter
-description: Install ktn-linter and activate its licence, so a workflow can run the linter.
+description: Install ktn-linter and verify its licence, so a workflow can run the linter.
 
-# One required input by design. The subject UUID is carried inside the private
-# key's comment and the public half is derivable from it, so asking for either
-# separately would be asking the caller to repeat what the key already says —
-# and to keep three things in sync instead of one.
+# No key material, by design.
+#
+# The linter proves a CI run is one by exchanging the runner's own credentials
+# for a token GitHub signs, and the roster says which accounts that covers. A
+# workflow therefore needs `permissions: id-token: write` and nothing else:
+#
+#   permissions:
+#     id-token: write
+#   steps:
+#     - uses: kodflow/ktn/setup@main
+#     - run: ktn-linter run ./...
+#
+# This action used to take a private key from a repository secret and write it
+# onto the runner. That secret is readable by every workflow in the repository
+# and by everyone with write access — and a CI credential is exactly the one
+# that has to be revocable without taking a person's machine offline with it.
+# A signed token that expires in minutes is a far smaller thing to hand a
+# runner than a licence key that does not expire at all.
+#
+# A CI run does not consume one of the licence's three device seats.
 
 inputs:
-  license-key:
-    description: >-
-      The licence private key, exactly as `ktn-linter license create` wrote it.
-      Store it in a repository secret and pass it as `${{ secrets.KTN_LICENSE_KEY }}`.
-    required: true
   version:
     description: Release tag to install. Defaults to the latest published build.
     required: false
     default: latest
+  license-key:
+    description: >-
+      Deprecated and no longer needed. A CI run now proves itself with the
+      runner's OIDC token, so nothing here wants a private key. Passing one
+      still works — the key is installed as a device, and it still spends one
+      of your three device seats. Remove it, grant `id-token: write`, and the
+      seat comes back.
+    required: false
+    default: ""
 
 outputs:
   subject:
-    description: The licence subject (UUID) that was activated.
-    value: ${{ steps.activate.outputs.subject }}
+    description: >-
+      What was authorised: a device UUID when a licence key was supplied, or
+      `ci:<owner>/<repo>` when the run authorised itself.
+    value: ${{ steps.verify.outputs.subject }}
 
 runs:
   using: composite
@@ -36,31 +58,26 @@ runs:
         curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-    - name: Activate the licence
-      id: activate
+    - name: Install a licence key, if one was supplied
+      if: inputs.license-key != ''
       shell: bash
       env:
         LICENSE_KEY: ${{ inputs.license-key }}
       run: |
         set -euo pipefail
-
-        if [ -z "${LICENSE_KEY}" ]; then
-          echo "::error::license-key is empty. Pass the key from a repository secret."
-          exit 1
-        fi
+        echo "::warning::license-key is deprecated: a CI run now authorises itself with the runner's OIDC token, and this key spends one of your three device seats. Remove the input and grant 'permissions: id-token: write' instead."
 
         mkdir -p "$HOME/.ssh"
         chmod 700 "$HOME/.ssh"
 
         # Stage under a neutral name first: the final filename must be the
-        # subject UUID, and that is read out of the key itself.
+        # device UUID, and that is read out of the key itself.
         staged=$(mktemp "$HOME/.ssh/ktn-staged.XXXXXX")
         printf '%s\n' "${LICENSE_KEY}" > "$staged"
         chmod 600 "$staged"
 
         # The comment is `ktn-linter licence <uuid>`; ssh-keygen -y prints it
-        # after the key material. Deriving the identity here is what keeps the
-        # action to a single input.
+        # after the key material.
         if ! pub=$(ssh-keygen -y -f "$staged" 2>/dev/null); then
           rm -f "$staged"
           echo "::error::license-key is not a usable private key (a passphrase-protected key cannot be used in CI)."
@@ -70,31 +87,38 @@ runs:
         subject=$(printf '%s' "$pub" | awk '{print $NF}')
         if ! printf '%s' "$subject" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
           rm -f "$staged"
-          echo "::error::cannot read a subject UUID from the key comment — was it created by \`ktn-linter license create\`?"
+          echo "::error::cannot read a device UUID from the key comment — was it created by \`ktn-linter license create\`?"
           exit 1
         fi
 
         mv "$staged" "$HOME/.ssh/${subject}"
         printf '%s\n' "$pub" > "$HOME/.ssh/${subject}.pub"
         chmod 644 "$HOME/.ssh/${subject}.pub"
+        echo "Installed licence device ${subject}"
 
-        echo "subject=${subject}" >> "$GITHUB_OUTPUT"
-        echo "Activated licence subject ${subject}"
-
-    - name: Verify the licence against the published roster
+    - name: Verify the licence
+      id: verify
       shell: bash
       run: |
         set -euo pipefail
-        # Fail here rather than three steps later inside a lint run: a licence
+        # Fail here rather than several steps later inside a lint run: a licence
         # problem and a lint failure look nothing alike to whoever reads the log,
         # and this is the only place that can say which one it is.
+        #
+        # `license status` reports a CI seat the same way it reports a device,
+        # so this one check covers both paths.
         if ! status=$(ktn-linter license status 2>&1); then
           echo "::error::licence verification failed."
           printf '%s\n' "$status"
+          echo "::notice::With no licence key, this workflow needs 'permissions: id-token: write' so the run can prove it is CI."
           exit 1
         fi
         printf '%s\n' "$status"
         if ! printf '%s' "$status" | grep -q 'Status:  valid'; then
           echo "::error::the licence is not valid — see the status above."
+          echo "::notice::With no licence key, this workflow needs 'permissions: id-token: write' so the run can prove it is CI."
           exit 1
         fi
+
+        subject=$(printf '%s' "$status" | awk '/^Subject:/ {print $2; exit}')
+        echo "subject=${subject}" >> "$GITHUB_OUTPUT"

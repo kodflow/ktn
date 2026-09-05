@@ -7,20 +7,36 @@ universal installer and the prebuilt release binaries.
 ## Continuous integration
 
 ```yaml
-- uses: kodflow/ktn/setup@main
-  with:
-    license-key: ${{ secrets.KTN_LICENSE_KEY }}
+permissions:
+  id-token: write
 
-- run: ktn-linter run ./...
+steps:
+  - uses: kodflow/ktn/setup@main
+  - run: ktn-linter run ./...
 ```
 
-One input, deliberately. The subject UUID lives in the key's comment and the
-public half is derivable from it, so passing them separately would only be
-repeating what the key already says — and giving you three things to keep in
-sync instead of one.
+**No key, and no repository secret.** The linter exchanges the runner's own
+credentials for a token GitHub signs, and the published roster says which
+accounts that covers. `id-token: write` is what lets the runner mint that
+token; without it the run cannot prove it is CI and the licence check fails
+with a message saying so.
 
-The action installs the linter, activates the licence, and verifies it against
-the published roster before your workflow continues. It fails there rather than
+**A CI run does not spend a device seat.** Your three devices stay yours.
+
+This replaces passing a private key from a repository secret. That secret was
+readable by every workflow in the repository and by everyone with write
+access — and a CI credential is exactly the one that has to be revocable
+without taking a person's machine offline with it. A token that expires in
+minutes is a far smaller thing to hand a runner than a licence key that does
+not expire at all.
+
+`license-key` still works and is deprecated. A key passed that way is
+installed as an ordinary device and **spends one of your three seats**; the
+action warns when it sees one. Remove the input, grant `id-token: write`, and
+the seat comes back.
+
+The action installs the linter and verifies the licence before your workflow
+continues — whichever way it was authorised. It fails there rather than
 several steps later inside a lint run, because a licence problem and a lint
 failure read nothing alike in a log.
 
@@ -73,10 +89,13 @@ another year are different acts.
 CI needs a private key in a repository secret, and a key in a secret is
 readable by every workflow and by everyone with write access.
 
-Use one of your three device seats for CI rather than reusing a machine's
-key: a secret that leaks must be revocable without taking one of your real
-machines offline with it. Name it accordingly on the request, so the device
-you revoke later is the one you meant.
+**You no longer need one.** A workflow granted `id-token: write` authorises
+itself and spends no seat — see [Continuous integration](#continuous-integration).
+
+A key is still needed for CI that is not GitHub Actions, since nothing else
+can mint a token this linter knows how to check. Use one of your three device
+seats for it and name it accordingly on the request, so the device you revoke
+later is the one you meant.
 
 Store the private key exactly as written, newlines included:
 
