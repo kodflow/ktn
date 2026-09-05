@@ -19,7 +19,7 @@ SCRIPT = pathlib.Path(__file__).with_name("parse_request.py")
 # key material, and it should not have any: a full-length ed25519 line trips
 # secret scanners on FORM alone, whatever it decodes to, and a test is not
 # worth sending someone to check whether the thing that was flagged mattered.
-KEY = "ssh-ed25519 AAAAtestfixturenotarealkey"
+KEY = "ssh-ed25519 AAAAtestfixturenotarealkeyAA"
 MAC = "eb56f295-9428-49b1-9dc3-0ebc6e383444"
 WIN = "11111111-2222-4333-8444-555555555555"
 BOX = "22222222-3333-4444-8555-666666666666"

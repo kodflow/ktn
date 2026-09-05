@@ -159,6 +159,11 @@ jobs:
         env:
           UUID: ${{ steps.request.outputs.uuid }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          # The account's NUMERIC id, which is what a CI run is matched on. A
+          # login can be renamed and a released one claimed by somebody else,
+          # so matching CI entitlement on the name would make a freed handle a
+          # way in. GitHub does not reissue an id.
+          AUTHOR_ID: ${{ github.event.issue.user.id }}
           # The full current label set, not just the one that triggered this
           # run: an expireAt: label only counts if it landed before (or with)
           # license:approved.
@@ -168,7 +173,7 @@ jobs:
           set -euo pipefail
           mkdir -p state
           mv /tmp/subject.pub "state/${UUID}.pub"
-          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}"
+          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}"
           python3 .github/scripts/record_expiry.py "${UUID}"
 
       - name: Commit

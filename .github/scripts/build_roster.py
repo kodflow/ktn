@@ -73,6 +73,55 @@ def required_version(state_dir: pathlib.Path) -> str:
     return path.read_text().strip()
 
 
+def ci_entitlements(state_dir: pathlib.Path) -> dict:
+    """Which accounts a CI run may be authorised for, and until when.
+
+    Keyed by the account's NUMERIC id, never its login. A login can be renamed,
+    and a released one can be claimed by somebody else — matching a CI run on
+    the name would turn a freed handle into a way in. GitHub does not reissue
+    an id.
+
+    An account appears only while it still has a published device. A licence
+    with no active device is not a licence anyone is using, and its CI should
+    stop with it; nothing here needs a separate revocation path.
+
+    The term is the licence's own, so CI expires exactly when the devices do.
+    """
+    accounts_path = state_dir / "accounts.json"
+    owners_path = state_dir / "owners.json"
+    licences_path = state_dir / "licences.json"
+    # No accounts file means no account id was ever captured, which is how
+    # every licence issued before this existed looks. They keep working; they
+    # simply get no CI seat until their next approval records an id.
+    if not (accounts_path.exists() and owners_path.exists()):
+        return {}
+
+    accounts = json.loads(accounts_path.read_text() or "{}")
+    owners = json.loads(owners_path.read_text() or "{}")
+    licences = json.loads(licences_path.read_text() or "{}") if licences_path.exists() else {}
+
+    entitled = {}
+    for login, record in accounts.items():
+        account_id = record.get("id")
+        if not account_id:
+            continue
+        # A published key is what makes a device active — the same rule the
+        # seat count uses, and for the same reason: owners.json deliberately
+        # keeps revoked bindings so an identity cannot be squatted afterwards.
+        active = any(
+            owner == login and (state_dir / f"{uuid}.pub").is_file()
+            for uuid, owner in owners.items()
+        )
+        if not active:
+            continue
+        entry = {}
+        expires_at = licences.get(login, {}).get("expiresAt")
+        if expires_at:
+            entry["exp"] = expires_at
+        entitled[str(account_id)] = entry
+    return entitled
+
+
 def main() -> None:
     licenses_path = licenses_dir()
     # A fresh state branch has no keys until the first subject is published;
@@ -108,13 +157,29 @@ def main() -> None:
     required = required_version(licenses_path)
     if required:
         roster["minv"] = required
+
+    # Which accounts a CI run may be authorised for. Omitted entirely when
+    # empty: an absent "ci" and an empty one mean the same thing to the client
+    # (no CI entitlement), and leaving the key out keeps the signed bytes
+    # identical to what older rosters looked like.
+    #
+    # It is carried by the roster for the same reason the version floor is:
+    # this document is already fetched on every cold start and already
+    # authenticated against the compiled-in anchor, so an entitlement
+    # published here cannot be forged by redirecting an endpoint.
+    entitlements = ci_entitlements(licenses_path)
+    if entitlements:
+        roster["ci"] = entitlements
     # Separators without spaces keep the signed bytes stable: the signature
     # covers the exact serialisation, so cosmetic formatting changes would
     # invalidate it.
     (licenses_path / "roster.json").write_text(
         json.dumps(roster, separators=(",", ":"), sort_keys=True)
     )
-    print(f"roster: {len(subjects)} subject(s), valid until {roster['exp']}")
+    print(
+        f"roster: {len(subjects)} subject(s), "
+        f"{len(entitlements)} CI account(s), valid until {roster['exp']}"
+    )
 
 
 if __name__ == "__main__":
