@@ -1,0 +1,157 @@
+name: Watch the served roster
+
+# Monitoring that is not inside the thing it monitors.
+#
+# license-roster.yml ends with an alarm step, and that step can only fire if
+# everything before it worked. A job that fails at the push, a job GitHub never
+# starts, a workflow disabled after sixty days of repository inactivity: none
+# of them reach it. The outage this repository already had was invisible for
+# thirteen hours for precisely that reason — a failing cron on a quiet
+# repository looks exactly like a quiet repository.
+#
+# So this workflow has its own schedule, its own job, and reads what CLIENTS
+# fetch rather than what the signer holds. It answers the questions the signer
+# cannot answer about itself: is anything being published, does it verify, is
+# it small enough to accept, do the origins agree, and did the signing workflow
+# actually succeed recently.
+#
+# It is deliberately incapable of publishing anything. `contents: read` is all
+# it has; a monitor that can write the thing it watches is not a second opinion.
+#
+# What still watches THIS workflow: GitHub's own notification when a scheduled
+# workflow fails, and the signer's freshness alarm, which keeps working for the
+# subset of failures it can see. A simultaneous failure of both remains
+# unobserved from inside the repository — that would need a monitor outside it.
+
+on:
+  schedule:
+    # Offset from the signer's 7,27,47 so a watch never coincides with the
+    # publication it is judging: a fetch landing mid-push would read a
+    # half-updated branch and report a disagreement that is really a race.
+    - cron: "13,43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  # `gh run list` needs this to answer "when did signing last succeed?".
+  actions: read
+
+concurrency:
+  # Deliberately NOT the signer's group: sharing it would make the watch wait
+  # on the thing it is watching, and a stuck signer would silence the watch.
+  group: roster-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Judge what the origins are serving
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      # Every fetch failure is a finding, never an abort: a dead origin is
+      # exactly what this workflow exists to report, and a job that dies here
+      # would report nothing at all — the same failure shape it is replacing.
+      - name: Fetch what each origin is actually serving
+        id: fetch
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A repository VARIABLE, not a secret: this is the public half of the
+          # signing key, the same one compiled into every published binary.
+          # Nothing is gained by hiding it and a secret would be masked out of
+          # the logs that have to show what was compared.
+          VENDOR_PUBLIC_KEY: ${{ vars.VENDOR_PUBLIC_KEY }}
+        run: |
+          set -uo pipefail
+          tmp="${RUNNER_TEMP:-/tmp}"
+
+          # The origin clients read first, through the CDN that caches it with
+          # max-age=300. This is the copy that matters.
+          curl -fsSL --max-time 30 -o "${tmp}/raw.json" \
+            "https://raw.githubusercontent.com/${REPO}/licenses/roster.signed.json" \
+            || echo "::warning::the raw origin did not answer; the judgement below will say so"
+
+          # A genuinely different backend for the same object, which is what
+          # makes the agreement between them worth checking: the CDN can serve
+          # a stale copy the API does not have. Note the contents endpoint
+          # stops returning inline content above 1MB — at that size the
+          # ceiling findings fire anyway.
+          gh api "/repos/${REPO}/contents/roster.signed.json?ref=licenses" --jq '.content' \
+            2>/dev/null | tr -dc 'A-Za-z0-9+/=' | base64 -d > "${tmp}/api.json" \
+            || echo "::warning::the contents API did not answer; the judgement below will say so"
+
+          # The one question the signer cannot answer about itself.
+          last=$(gh run list --repo "${REPO}" --workflow license-roster.yml \
+            --status success --limit 1 --json updatedAt --jq '.[0].updatedAt // empty' \
+            2>/dev/null || true)
+          echo "signer_last_success=${last}" >> "$GITHUB_OUTPUT"
+
+          # The PUBLIC half of the signing key, if a maintainer has configured
+          # it. A monitor is not given the private half: widening that secret
+          # to a second workflow costs more than this check is worth. Without
+          # it the authenticity check reports that it could not be made — it
+          # never reports success.
+          if [ -n "${VENDOR_PUBLIC_KEY:-}" ]; then
+            printf '%s\n' "${VENDOR_PUBLIC_KEY}" > "${tmp}/vendor.pub"
+            echo "key=${tmp}/vendor.pub" >> "$GITHUB_OUTPUT"
+          else
+            echo "key=" >> "$GITHUB_OUTPUT"
+          fi
+        continue-on-error: true
+
+      - name: Judge it
+        id: judge
+        env:
+          SIGNER_LAST_SUCCESS: ${{ steps.fetch.outputs.signer_last_success }}
+          VENDOR_PUBLIC_KEY_FILE: ${{ steps.fetch.outputs.key }}
+        run: |
+          set -uo pipefail
+          tmp="${RUNNER_TEMP:-/tmp}"
+          python3 .github/scripts/watch_roster.py \
+            "raw.githubusercontent.com=${tmp}/raw.json" \
+            "api.github.com/contents=${tmp}/api.json"
+        continue-on-error: true
+
+      # `always()`, and an alarm on the judgement step FAILING as much as on it
+      # finding something. A monitor whose own crash is silent is the bug this
+      # file is fixing, one level up.
+      - name: Raise the alarm
+        if: always() && (steps.judge.outcome != 'success' || steps.judge.outputs.alarm == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.judge.outputs.report }}
+        run: |
+          set -euo pipefail
+          body="${REPORT}"
+          if [ -z "${body}" ] || [ ! -f "${body}" ]; then
+            body="${RUNNER_TEMP:-/tmp}/fallback.md"
+            {
+              echo "The roster watch could not complete, so nothing is known about what"
+              echo "the licence origins are serving right now. Read this run's log: the"
+              echo "watch itself is broken, which is not the same as the roster being fine."
+            } > "${body}"
+          fi
+
+          # One issue, not one per run: the condition persists and a new issue
+          # every half hour would bury the first one.
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title licence: served roster is not healthy" --json number \
+            --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${{ github.repository }}" --body-file "${body}"
+            exit 0
+          fi
+          gh issue create --repo "${{ github.repository }}" \
+            --title "licence: served roster is not healthy" \
+            --body-file "${body}"
+
+      # The alarm above is a notification; this is the gate. Without it a red
+      # finding would leave a green run, and a green run is what nobody looks at.
+      - name: Fail the run if anything was found
+        if: always() && (steps.judge.outcome != 'success' || steps.judge.outputs.alarm == 'true')
+        run: |
+          echo "::error::the served roster is not healthy — see the issue this run opened."
+          exit 1
