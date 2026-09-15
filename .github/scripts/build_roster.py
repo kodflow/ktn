@@ -9,10 +9,12 @@ licence's term and does not move on re-signature.
 """
 import os
 import base64
+import binascii
 import datetime
 import hashlib
 import json
 import pathlib
+import struct
 
 
 def licenses_dir() -> pathlib.Path:
@@ -27,16 +29,74 @@ def licenses_dir() -> pathlib.Path:
     """
     return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
 
+
+def candidate_dir() -> pathlib.Path:
+    """Where the roster being built is written, which is NOT where state lives.
+
+    The signing job stages its work in a scratch directory, and only a
+    candidate whose signature was created AND verified in the same run is
+    copied into the published tree — see promote_roster.py. Building in place
+    is what let a run with no signing key leave a NEW roster.json beside the
+    PREVIOUS roster.json.sig: the steps after it tested only that a .sig
+    existed, so they bundled and pushed that mismatched pair, and every client
+    then reported the roster as forged.
+
+    Defaults to the state directory so a hand-run from a plain checkout keeps
+    behaving as it always did.
+    """
+    return pathlib.Path(os.environ.get("CANDIDATE_DIR") or licenses_dir())
+
 # Must match RosterLifetime in pkg/license. Widening it here without widening
 # it there would publish a roster the binary refuses; the reverse would leave
 # clients blocked between signatures.
 LIFETIME_HOURS = 24
 
 
+# RFC 8709 wire format, checked here as well as at the gate. The two exist for
+# different reasons: parse_request.py refuses a bad key so it never reaches the
+# branch, and this refuses to be stopped by one that did anyway — a hand edit,
+# or a key published before that validation existed.
+ED25519_ALGORITHM = b"ssh-ed25519"
+ED25519_KEY_BYTES = 32
+
+
+def ed25519_blob(line: str) -> bytes:
+    """Decode an authorized-keys line strictly, or raise ValueError.
+
+    `base64.b64decode` without validate=True DISCARDS characters it does not
+    recognise, so a corrupt blob used to be fingerprinted as whatever it
+    happened to decode to — a subject nothing would ever match, published with
+    no complaint. Bad padding was the louder half: it raised, and the exception
+    took the whole roster with it. One unreadable key must not be able to stop
+    every signature.
+    """
+    parts = line.split()
+    if len(parts) < 2:
+        raise ValueError("not an authorized-keys line")
+    blob = base64.b64decode(parts[1], validate=True)
+    offset = 0
+    fields = []
+    for _ in range(2):
+        if offset + 4 > len(blob):
+            raise ValueError("truncated length prefix")
+        (length,) = struct.unpack(">I", blob[offset : offset + 4])
+        end = offset + 4 + length
+        if end > len(blob):
+            raise ValueError("length prefix runs past the blob")
+        fields.append(blob[offset + 4 : end])
+        offset = end
+    if fields[0] != ED25519_ALGORITHM:
+        raise ValueError(f"blob declares {fields[0]!r}, not {ED25519_ALGORITHM!r}")
+    if len(fields[1]) != ED25519_KEY_BYTES:
+        raise ValueError(f"{len(fields[1])} bytes of key material, not {ED25519_KEY_BYTES}")
+    if offset != len(blob):
+        raise ValueError("trailing bytes after the key material")
+    return blob
+
+
 def fingerprint(line: str) -> str:
     """Render the SHA256 fingerprint exactly as ssh.FingerprintSHA256 does."""
-    blob = base64.b64decode(line.split()[1])
-    digest = hashlib.sha256(blob).digest()
+    digest = hashlib.sha256(ed25519_blob(line)).digest()
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
@@ -128,11 +188,21 @@ def main() -> None:
     # the hourly schedule must still succeed with zero subjects instead of
     # crashing on a missing parent directory.
     licenses_path.mkdir(parents=True, exist_ok=True)
+    out_path = candidate_dir()
+    out_path.mkdir(parents=True, exist_ok=True)
 
-    subjects = {
-        pub.stem: subject_value(pub, licenses_path)
-        for pub in sorted(licenses_path.glob("*.pub"))
-    }
+    subjects, unreadable = {}, []
+    for pub in sorted(licenses_path.glob("*.pub")):
+        try:
+            subjects[pub.stem] = subject_value(pub, licenses_path)
+        except (binascii.Error, ValueError) as problem:
+            # Loud, and survivable. Publishing this subject is impossible —
+            # there is no fingerprint to publish — but stopping here would
+            # withhold the roster from every other subject too, and a roster
+            # that is not re-signed blocks the whole parc within 24 hours. One
+            # device fails; the rest keep working and the log says which.
+            unreadable.append(pub.name)
+            print(f"::error::{pub.name} is not a usable ssh-ed25519 key ({problem}); omitted from the roster")
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     roster = {
@@ -173,12 +243,13 @@ def main() -> None:
     # Separators without spaces keep the signed bytes stable: the signature
     # covers the exact serialisation, so cosmetic formatting changes would
     # invalidate it.
-    (licenses_path / "roster.json").write_text(
+    (out_path / "roster.json").write_text(
         json.dumps(roster, separators=(",", ":"), sort_keys=True)
     )
     print(
         f"roster: {len(subjects)} subject(s), "
         f"{len(entitlements)} CI account(s), valid until {roster['exp']}"
+        + (f"; {len(unreadable)} unusable key(s) omitted: {', '.join(unreadable)}" if unreadable else "")
     )
 
 

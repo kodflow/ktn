@@ -18,7 +18,19 @@ Files on that branch: `<uuid>.pub` (published devices), `owners.json`
 (device → account), `accounts.json` (account → numeric id), `licences.json`
 (account → term), `<uuid>.meta.json` (per-device copy of the term),
 `quotas.json` (optional per-account seat override), `required-version.txt`,
-and the signed `roster.json` / `roster.signed.json`.
+`enrolments.json` (issue → the device it published), `decisions.jsonl` (the
+append-only ledger of label decisions and what became of each), and the signed
+`roster.json` / `roster.signed.json`.
+
+All of it is PUBLIC, and some of it is contract data: `owners.json` names which
+GitHub accounts are customers, `licences.json` gives each one's end date, and
+`quotas.json` says who negotiated extra seats. The signed roster has to be
+public — every client fetches it unauthenticated — but the login↔account
+mapping does not, and hashing a numeric GitHub id would not hide it: those ids
+are small enumerable integers. Moving the customer-facing files to a private
+store the signer reads with a token is the only fix; nothing here does that
+yet. `enrolments.json` and `decisions.jsonl` were deliberately written to carry
+no login and no actor, since the issues they reference are already public.
 
 ## The model
 
@@ -74,6 +86,21 @@ An account appears only while it has an active device, so revoking the last one
 removes CI with it — there is no separate revocation path to forget. The term is
 the licence's own, so CI expires exactly when the devices do.
 
+**An id is written once and a differing one is a conflict, never an update.**
+`record_owner.py` used to overwrite: GitHub does not reissue an id, so a
+different value looked like a mistake to correct. The premise is right and the
+conclusion was backwards — an id does not change for an account, but a LOGIN
+can be released and registered by someone else, and everything except the `ci`
+block is keyed on the login. Overwriting handed that login's term, devices,
+quota and CI seat to whoever picked up the freed handle. `parse_request.py`
+refuses such a request at the gate; deciding whether it is a rename or a
+recycled handle is a billing question, not one for an approval run.
+
+What remains open: an account enrolled before `accounts.json` existed has no id
+to compare, so the guard cannot bind for it. Re-keying `owners.json`,
+`licences.json` and `quotas.json` by id is the real repair and is a live-state
+migration.
+
 Licences approved before `accounts.json` existed carry no id. They keep working
 as devices and get no CI seat until their next approval records one; inventing
 an id, or falling back to the login, would defeat the reason the id is used.
@@ -108,9 +135,14 @@ than a copy that can drift from it.
 dates computed within the same second and passed whether or not the rule they
 claimed to pin existed. Plant a value the code could not have produced.
 
-Fixture keys are deliberately far too short to be real: a full-length
-`ssh-ed25519` line trips secret scanners on **form** alone, whatever it decodes
-to, and `parse_request.py` only checks the shape of the line.
+`parse_request.py` now reads the SSH wire format, not just the shape of the
+line, so a fixture has to be a real RFC 8709 blob — and a full-length
+`ssh-ed25519 AAAA…` literal trips secret scanners on **form** alone, whatever
+it decodes to. `fixture_key()` in `test_parse_request.py` and
+`test_build_roster.py` assembles the bytes at runtime, which keeps both
+properties: valid structure, and no line in this repository shaped like a key.
+The short literals that remain are negative fixtures — they exist to be
+refused.
 
 ## Workflow ordering that other code depends on
 
@@ -118,7 +150,46 @@ to, and `parse_request.py` only checks the shape of the line.
 `record_expiry.py`. The last reads `owners.json` to find the account whose term
 to apply, so that order is load-bearing.
 
-The `concurrency` group serialises approvals but does **not** queue them: GitHub
-keeps one pending run per group, so a burst can drop an approval. The schedule
-recovers, since the next signing run rebuilds the roster from whatever is on the
-branch; an approval that never landed needs its label re-applied.
+**Nothing is published until it was signed AND verified in the same run.** The
+signing job builds into a scratch `CANDIDATE_DIR`; the step that runs `openssl
+pkeyutl -verify` then writes `attestation.json` naming the run and the exact
+bytes it verified, and `promote_roster.py` is the only thing that writes into
+the state tree — refusing unless that receipt matches this run, the bundle
+carries those same bytes, the artefact is under the ceiling the client enforces
+and the window is still open. On any refusal the previously published roster is
+left exactly as it was.
+
+That structure replaces an `exit 0`. A run with no signing key used to rebuild
+`roster.json`, skip signing, and find the PREVIOUS run's `roster.json.sig` in
+the checkout; the steps after it tested only that a `.sig` existed, so the
+mismatched pair was bundled and pushed. Nobody gained access — every client
+refused everything — but each one reported the roster as forged while the
+workflow reported success. A missing key now fails the run.
+
+**The `concurrency` group serialises but still does not guarantee delivery.**
+`queue: max` lets a hundred runs wait in FIFO order instead of one, which makes
+a dropped decision far less likely and remains a mitigation: the hundred and
+first is still discarded. The correction is the reconciliation step, which runs
+before every signature and compares the decisions a maintainer took against
+what was published — identity is the label event id, order is that event's
+timestamp, and the outcome of each is appended to `decisions.jsonl` so nothing
+is judged twice.
+
+A dropped REVOCATION is why that exists. A dropped approval has a customer
+asking about it; a revocation nobody wrote is invisible, and the schedule keeps
+signing valid rosters that authorise the withdrawn device for the rest of its
+term. Reconciliation re-applies it, resolving the subject from
+`enrolments.json` and never from the issue body, which the requester can still
+edit after the label lands. An approval is REPORTED, never replayed: publishing
+needs the key from that body.
+
+`roster-watch.yml` is separate on purpose. The freshness alarm inside
+`license-roster.yml` is the last step of the job that signs, so it cannot fire
+for a job that failed earlier or never ran — the shape of the thirteen-hour
+outage. The watch has its own schedule, `contents: read`, and judges what the
+ORIGINS serve: authenticity, the age of the served signature, the window with a
+margin, the size against what the client refuses, and whether the origins agree.
+It also answers the question the signer cannot ask about itself — when did
+signing last succeed. Its authenticity check needs the `VENDOR_PUBLIC_KEY`
+repository variable (the public half only); without it, the watch reports that
+the check could not be made rather than reporting health.

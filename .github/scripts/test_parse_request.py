@@ -5,25 +5,45 @@ This is the script that decides whether a key reaches the roster. Everything it
 reads comes from an issue body, which anyone can write, so the negative cases
 matter more than the positive one.
 """
+import base64
 import importlib.util
 import json
 import os
 import pathlib
+import struct
 import sys
 import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).with_name("parse_request.py")
-# Deliberately far too short to be a key. parse_request only checks the SHAPE
-# of the line — algorithm prefix plus base64 — so a fixture does not need real
-# key material, and it should not have any: a full-length ed25519 line trips
-# secret scanners on FORM alone, whatever it decodes to, and a test is not
-# worth sending someone to check whether the thing that was flagged mattered.
-KEY = "ssh-ed25519 AAAAtestfixturenotarealkeyAA"
 MAC = "eb56f295-9428-49b1-9dc3-0ebc6e383444"
 WIN = "11111111-2222-4333-8444-555555555555"
 BOX = "22222222-3333-4444-8555-666666666666"
 FOURTH = "33333333-4444-4555-8666-777777777777"
+# The numeric id is the identity; the login is a label. Distinct per account so
+# a test cannot pass by accident when the two are confused.
+IDS = {"kodflow": "133899878", "someone-else": "424242", "other": "777777"}
+
+
+def fixture_key(material: bytes = b"ktn test fixture key, not real!!", algorithm: bytes = b"ssh-ed25519") -> str:
+    """A structurally valid ssh-ed25519 line, assembled rather than pasted.
+
+    parse_request.py reads the wire format now, so a blob that is merely
+    SHAPED like a key is refused — and a full-length `ssh-ed25519 AAAA…`
+    literal trips secret scanners on FORM alone, whatever it decodes to.
+    Building the bytes here keeps both properties at once: real RFC 8709
+    structure, and no line anywhere in this repository shaped like a key.
+    """
+    blob = (
+        struct.pack(">I", len(algorithm))
+        + algorithm
+        + struct.pack(">I", len(material))
+        + material
+    )
+    return "ssh-ed25519 " + base64.b64encode(blob).decode()
+
+
+KEY = fixture_key()
 
 
 def load_script():
@@ -52,23 +72,34 @@ class ParseRequestTest(unittest.TestCase):
         self.output.touch()
         os.environ["LICENSES_DIR"] = str(self.licenses)
         os.environ["GITHUB_OUTPUT"] = str(self.output)
-        self.addCleanup(os.environ.pop, "LICENSES_DIR", None)
-        self.addCleanup(os.environ.pop, "GITHUB_OUTPUT", None)
+        for key in ("LICENSES_DIR", "GITHUB_OUTPUT", "AUTHOR_ID"):
+            self.addCleanup(os.environ.pop, key, None)
         self.module = load_script()
 
-    def enrol(self, uuid: str, account: str, published: bool = True):
+    def enrol(self, uuid: str, account: str, published: bool = True, account_id: str = None):
         """Record a device as owned by account, and optionally publish its key."""
         owners_path = self.licenses / "owners.json"
         owners = json.loads(owners_path.read_text()) if owners_path.exists() else {}
         owners[uuid] = account
         owners_path.write_text(json.dumps(owners))
+
+        # The approval chain records the account's numeric id alongside the
+        # binding; a fixture without it is a licence that predates accounts.json.
+        recorded = IDS.get(account, "1") if account_id is None else account_id
+        if recorded:
+            accounts_path = self.licenses / "accounts.json"
+            accounts = json.loads(accounts_path.read_text()) if accounts_path.exists() else {}
+            accounts[account] = {"id": recorded}
+            accounts_path.write_text(json.dumps(accounts))
+
         if published:
             (self.licenses / f"{uuid}.pub").write_text(KEY + "\n")
 
-    def run_script(self, subject: str, author: str, key: str = KEY):
+    def run_script(self, subject: str, author: str, key: str = KEY, author_id: str = None):
         """Invoke main() the way the workflow does."""
         os.environ["BODY"] = body(subject, key)
         os.environ["AUTHOR"] = author
+        os.environ["AUTHOR_ID"] = IDS.get(author, "1") if author_id is None else author_id
         self.module.main()
 
     def test_a_first_device_is_accepted(self):
@@ -195,10 +226,119 @@ class ParseRequestTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_script(MAC, "kodflow", key="ssh-rsa AAAAB3NzaC1yc2EAAAA")
 
+    # The line and the bytes are two different gates. Only the second one
+    # decides whether build_roster.py can fingerprint what was committed.
+
+    def test_a_key_that_is_only_shaped_like_one_is_refused(self):
+        """THE defect: the shape was the whole check.
+
+        Committed, this blob reaches build_roster.py, which fingerprints
+        whatever `base64.b64decode` salvaged from it — a subject no device will
+        ever match, published without complaint.
+        """
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", key="ssh-ed25519 AAAAtestfixturenotarealkeyAA")
+
+    def test_a_key_that_will_not_decode_is_refused(self):
+        """The louder half: bad padding raises, and the raise took the roster.
+
+        Not one licence — every signature after it, until someone found the
+        file. A refusal here costs one approval and names the file.
+        """
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", key="ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAIA")
+
+    def test_a_blob_declaring_another_algorithm_is_refused(self):
+        """The prefix a human reads and the algorithm a verifier reads must agree."""
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", key=fixture_key(algorithm=b"ssh-rsa"))
+
+    def test_a_blob_with_the_wrong_key_length_is_refused(self):
+        """ed25519 keys are 32 bytes. Anything else is not one."""
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", key=fixture_key(material=b"too short"))
+
+    def test_a_blob_with_trailing_bytes_is_refused(self):
+        """Room after the key material is room for something to hide in."""
+        padded = base64.b64decode(fixture_key().split()[1]) + b"extra"
+        with self.assertRaises(SystemExit):
+            self.run_script(
+                MAC, "kodflow", key="ssh-ed25519 " + base64.b64encode(padded).decode()
+            )
+
+    def test_a_lying_length_prefix_is_refused_not_allocated(self):
+        """The length prefix is attacker-supplied; it is checked before it is used."""
+        blob = struct.pack(">I", 0xFFFFFFFF) + b"ssh-ed25519"
+        with self.assertRaises(SystemExit):
+            self.run_script(
+                MAC, "kodflow", key="ssh-ed25519 " + base64.b64encode(blob).decode()
+            )
+
+    def test_a_key_with_a_comment_is_accepted(self):
+        """`ktn-linter license create` prints one; refusing it refuses every request."""
+        self.run_script(MAC, "kodflow", key=KEY + " ktn-linter licence " + MAC)
+
+        self.assertIn(f"uuid={MAC}", self.output.read_text())
+
     def test_an_anonymous_request_is_refused(self):
         """The author IS the identity a subject gets bound to."""
         with self.assertRaises(SystemExit):
             self.run_script(MAC, "")
+
+    # A login is a label. GitHub releases them; it does not reissue ids.
+
+    def test_a_recycled_login_cannot_inherit_the_licence(self):
+        """THE defect: everything is keyed on a name its holder can give up.
+
+        Approved under the old holder's login, this request would rotate one of
+        that account's devices to a key the new holder generated, inherit its
+        term and its quota, and — because the id was written every time — move
+        the CI seat to the new account's id as well.
+        """
+        self.enrol(MAC, "kodflow")
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_script(WIN, "kodflow", author_id="999999")
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNotIn(f"uuid={WIN}", self.output.read_text())
+
+    def test_it_cannot_take_over_a_device_either(self):
+        """The ownership check compares logins, so only the id can catch this."""
+        self.enrol(MAC, "kodflow")
+
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", author_id="999999")
+
+    def test_the_same_account_under_a_renamed_login_is_accepted(self):
+        """A rename keeps the id. Refusing that would lock out a real customer."""
+        self.enrol(MAC, "kodflow")
+
+        self.run_script(WIN, "kodflow")
+
+        self.assertIn(f"uuid={WIN}", self.output.read_text())
+
+    def test_a_request_with_no_account_id_is_refused(self):
+        """The id is how CI entitlement is matched; an approval without one is blind."""
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", author_id="")
+
+    def test_a_non_numeric_account_id_is_refused(self):
+        """A login smuggled in as an id would put us back where we started."""
+        with self.assertRaises(SystemExit):
+            self.run_script(MAC, "kodflow", author_id="kodflow")
+
+    def test_a_licence_that_predates_accounts_json_is_still_served(self):
+        """Those accounts have no recorded id and must not be locked out.
+
+        They also cannot be checked, which is the residual this guard does not
+        close: it only binds once an id is on record.
+        """
+        self.enrol(MAC, "kodflow", account_id="")
+
+        self.run_script(WIN, "kodflow")
+
+        self.assertIn(f"uuid={WIN}", self.output.read_text())
 
 
 if __name__ == "__main__":
