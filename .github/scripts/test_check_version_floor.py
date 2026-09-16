@@ -8,14 +8,32 @@ run, or turns an unsatisfiable floor into a published one — and the second
 refuses every client in the estate at once.
 """
 
+import importlib.util
 import pathlib
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+SCRIPT = pathlib.Path(__file__).with_name("check_version_floor.py")
 
-import check_version_floor as cvf
+
+def load_script():
+    """Import check_version_floor.py BY PATH; it is a script, not a module.
+
+    This used to insert the script directory into sys.path and then `import
+    check_version_floor`, which resolves by NAME. Under a different discovery
+    root, or with any other module of that name importable, the tests would
+    have exercised something else entirely and said nothing about it. Every
+    sibling in this directory loads by path for that reason; this file was the
+    exception.
+    """
+    spec = importlib.util.spec_from_file_location("check_version_floor", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    return module
+
+
+cvf = load_script()
 
 
 class TestRecordedFloor(unittest.TestCase):

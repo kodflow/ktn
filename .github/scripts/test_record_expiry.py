@@ -25,7 +25,7 @@ WIN = "11111111-2222-4333-8444-555555555555"
 BOX = "22222222-3333-4444-8555-666666666666"
 # State is keyed by NUMERIC account id; the login is a label. Distinct numbers
 # per account so a test cannot pass by confusing the two.
-ACCOUNT_IDS = {"a-holder": "70000001", "someone-else": "424242"}
+ACCOUNT_IDS = {"a-holder": "70000001", "someone-else": "70000002"}
 
 
 def load_script():

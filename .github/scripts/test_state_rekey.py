@@ -628,8 +628,15 @@ class TermOrderingTest(ChainTestCase):
         candidate could only move a term outwards."""
         got = self.terms_after_migration("2027-01-01T00:00:00Z", "soon")
 
-        self.assertIn(got, ("2027-01-01T00:00:00Z", "soon"))
-        self.assertIsNotNone(got)
+        #: The RECORDED value, exactly. `assertIn(got, (recorded, candidate))`
+        #: stood here and accepted both, so it passed even if the migration
+        #: replaced the recorded term with the unorderable candidate — which
+        #: is the one outcome this row exists to forbid.
+        self.assertEqual(
+            got,
+            "2027-01-01T00:00:00Z",
+            "the unorderable candidate replaced the recorded term; a term must never move outwards by accident",
+        )
 
 
 if __name__ == "__main__":

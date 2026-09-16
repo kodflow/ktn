@@ -236,22 +236,39 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
                 + (
                     "the earlier one, so no device outlives the licence that authorised it."
                     if comparable
-                    else "the one already recorded: one of the two is not a date string, "
-                    "so they cannot be ordered and guessing which is earlier could EXTEND "
-                    "a licence rather than shorten it."
+                    else "the one that is a readable date: the other cannot be ordered "
+                    "against it, and a term that cannot be read is no bound at all. "
+                    "Keeping whichever this loop saw first would make the answer depend "
+                    "on iteration order."
                 )
             )
             # min() across a str and anything else raises TypeError, which
             # aborted the whole migration over one malformed entry — and a
             # migration that cannot finish leaves the state half re-keyed,
             # which is the condition it exists to remove.
-            #: The earlier INSTANT, so no device outlives the licence that
-            #: authorised it — and the recorded value kept untouched when the
-            #: two cannot be ordered, because guessing could only move a term
-            #: outwards.
+            #: The earlier INSTANT when both are instants, and the PARSEABLE
+            #: one when only one is.
+            #:
+            #: "Keep what was recorded" stood here and was not a rule at all:
+            #: which value is "recorded" depends on which login this loop
+            #: reached first, so for an unorderable pair the answer was
+            #: iteration order. A test tightened from `assertIn(got, both)` to
+            #: the recorded value exposed it — the migration kept `soon` over
+            #: a real date because `soon` happened to be seen first.
+            #:
+            #: A parseable term is a usable bound; an unparseable one is a
+            #: corrupt entry that account_term's sentinel refuses downstream
+            #: anyway. Preferring the parseable one is therefore the only
+            #: choice that cannot leave the account with no usable bound, and
+            #: it does not depend on order.
             if comparable:
                 candidate = recorded if recorded_at <= candidate_at else candidate
-            else:
+            elif recorded_at is not None:
+                candidate = recorded
+            elif candidate_at is None:
+                #: Neither is an instant. Keep what is there rather than
+                #: swapping one corrupt value for another, and the warning
+                #: above has already named both.
                 candidate = recorded
         terms.setdefault(account_key, {})["expiresAt"] = candidate
     state.save(path, terms)

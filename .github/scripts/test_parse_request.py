@@ -22,7 +22,7 @@ BOX = "22222222-3333-4444-8555-666666666666"
 FOURTH = "33333333-4444-4555-8666-777777777777"
 # The numeric id is the identity; the login is a label. Distinct per account so
 # a test cannot pass by accident when the two are confused.
-IDS = {"a-holder": "70000001", "someone-else": "424242", "other": "777777"}
+IDS = {"a-holder": "70000001", "someone-else": "70000002", "other": "70000003"}
 
 
 def fixture_key(material: bytes = b"ktn test fixture key, not real!!", algorithm: bytes = b"ssh-ed25519") -> str:
@@ -321,9 +321,17 @@ class ParseRequestTest(unittest.TestCase):
             self.run_script(MAC, "a-holder", author_id="999999")
 
     def test_the_same_account_under_a_renamed_login_is_accepted(self):
-        """A rename keeps the id. Refusing that would lock out a real customer."""
-        self.enrol(MAC, "a-holder")
+        """A rename keeps the id. Refusing that would lock out a real customer.
 
+        Two DIFFERENT logins, which is what makes this a rename. It enrolled
+        and requested as `a-holder` before, so it passed even against an
+        implementation that rejected renames outright — it was measuring that
+        one login equals itself.
+        """
+        #: Enrolled under the OLD login, with the account's numeric id.
+        self.enrol(MAC, "former-handle", account_id=IDS["a-holder"])
+
+        #: The same account comes back under its new login and the same id.
         self.run_script(WIN, "a-holder")
 
         self.assertIn(f"uuid={WIN}", self.output.read_text())
