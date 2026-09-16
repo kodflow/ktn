@@ -592,6 +592,59 @@ class TermOrderingTest(ChainTestCase):
     min("soon", "2027-01-01T00:00:00Z") returns the date.
     """
 
+    def terms_after_migration_sorted(self, recorded, candidate):
+        """Plant the terms so `recorded` is the one migrate_terms sees FIRST.
+
+        migrate_terms walks `sorted(legacy.items())`, so the login NAMES decide
+        which value becomes "recorded" and which becomes the candidate. The
+        helper below names them older/newer, and `newer` sorts first — so every
+        row through it exercises corrupt-recorded-with-valid-candidate and
+        cannot reach the opposite direction, which is the one where a naive
+        implementation overwrites a good term with garbage.
+
+        `aaa`/`zzz` make the ordering explicit instead of incidental.
+        """
+        self.write("accounts.json", {"aaa": {"id": HOLDER_ID}, "zzz": {"id": HOLDER_ID}})
+        self.write("licences.json", {"aaa": {"expiresAt": recorded}, "zzz": {"expiresAt": candidate}})
+
+        self.run_with_argv("migrate_state_keys", [])
+
+        return self.read("account-terms.json").get(HOLDER_ID, {}).get("expiresAt")
+
+    def test_a_corrupt_candidate_does_not_replace_a_valid_recorded_term(self):
+        """The direction the helper below cannot reach.
+
+        A valid term is recorded first and a corrupt one arrives as the
+        candidate. Keeping the candidate would replace a usable bound with a
+        value account_term's sentinel then refuses downstream — an account
+        with no bound at all, from a migration that reported success.
+        """
+        got = self.terms_after_migration_sorted("2027-01-01T00:00:00Z", "soon")
+
+        self.assertEqual(
+            got,
+            "2027-01-01T00:00:00Z",
+            "a corrupt candidate replaced a valid recorded term",
+        )
+
+    def test_a_non_object_term_entry_refuses_instead_of_raising(self):
+        """account-terms.json is JSON nobody validated.
+
+        `"expiresAt" in x` means three different things across null, a number,
+        a string and a list, and `.get()` raises on all of them. The device
+        bindings are already written by then, so an exception left the re-key
+        half applied. It must refuse with a sentence instead.
+        """
+        self.write("accounts.json", {"aaa": {"id": HOLDER_ID}})
+        self.write("licences.json", {"aaa": {"expiresAt": "2027-01-01T00:00:00Z"}})
+        #: Written verbatim: a hand-edited file is how this shape arrives.
+        (self.licenses / "account-terms.json").write_text(json.dumps({HOLDER_ID: "2030-01-01T00:00:00Z"}) + "\n")
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_with_argv("migrate_state_keys", [])
+
+        self.assertNotEqual(raised.exception.code, 0)
+
     def terms_after_migration(self, first, second):
         """Two logins on ONE account, each carrying a term, then migrate.
 

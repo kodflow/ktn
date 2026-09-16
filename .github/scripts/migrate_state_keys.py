@@ -219,6 +219,20 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
         #: conflict path entirely. state.account_term uses a sentinel for
         #: exactly this reason; this call site was the layer that undid it.
         recorded_entry = terms.get(account_key, {})
+        #: The file is JSON nobody validated, so an entry can be null, a
+        #: number, a list or a string. `"expiresAt" in x` then means three
+        #: different things — a TypeError for a number, a SUBSTRING test for a
+        #: string, a membership test for a list — and `.get()` raises on all
+        #: three. migrate_devices has already saved state by the time this
+        #: runs, so the crash left the migration half applied: exactly the
+        #: partial re-key this script exists to finish.
+        if not isinstance(recorded_entry, dict):
+            fail(
+                f"account-terms.json records {recorded_entry!r} for account {account_key}, "
+                "which is not an object. The migration has already written the device "
+                "bindings, so it is stopping here rather than guessing: fix the entry and "
+                "run it again — it is idempotent."
+            )
         recorded_present = "expiresAt" in recorded_entry
         recorded = recorded_entry.get("expiresAt")
         if recorded_present and recorded != candidate:
