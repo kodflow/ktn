@@ -35,6 +35,7 @@ holds the login today. That refusal is the point: an account enrolled before
 ``accounts.json`` existed has no id to compare, so "is this the same person?"
 has no answer here, and the wrong answer gives a stranger a paid licence.
 """
+import datetime
 import json
 import os
 import pathlib
@@ -107,6 +108,39 @@ def private_for(state_dir: pathlib.Path) -> pathlib.Path:
     """
     configured = os.environ.get("PRIVATE_STATE_DIR")
     return pathlib.Path(configured) if configured else state_dir
+
+
+def instant(stamp):
+    """Parse an ISO-8601 instant, or return None when it cannot be read.
+
+    The ONE parser. reconcile_decisions.py had its own and migrate_state_keys.py
+    had none — it ordered two term strings with min(), which is LEXICAL. Measured
+    on python3.13: min("2027-01-01T00:00:00-05:00", "2027-01-01T00:00:00Z")
+    returns the first, and the first is four hours LATER. Ordering a licence
+    term that way EXTENDS it, which is the one direction a term must never move
+    by accident. And min("soon", "2027-01-01T00:00:00Z") happily returns the
+    date, so "both are strings" was never a comparability test.
+
+    None rather than a default, for three shapes:
+
+    * NOT A STRING — 12345 or a list raises AttributeError on .replace, not
+      ValueError, so a corrupt record crashed the caller instead of degrading;
+    * unparseable — a hand-written value;
+    * TIMEZONE-NAIVE — it parses, and then comparing it with an aware instant
+      raises TypeError one frame away, in a comparison that looks total.
+
+    Every caller treats None as "cannot conclude" and keeps what it already
+    had, rather than guessing an ordering neither value stated.
+    """
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def load(path: pathlib.Path, default=None):

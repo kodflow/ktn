@@ -215,7 +215,14 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
         candidate = entry["expiresAt"]
         recorded = terms.get(account_key, {}).get("expiresAt")
         if recorded is not None and recorded != candidate:
-            comparable = isinstance(recorded, str) and isinstance(candidate, str)
+            #: Parsed, not merely typed. "Both are strings" is not a
+            #: comparability test: min() orders them LEXICALLY, and two ISO
+            #: strings with different offsets do not sort chronologically —
+            #: measured, min("...T00:00:00-05:00", "...T00:00:00Z") returns
+            #: the one that is four hours LATER, which EXTENDS the licence.
+            recorded_at = state.instant(recorded)
+            candidate_at = state.instant(candidate)
+            comparable = recorded_at is not None and candidate_at is not None
             print(
                 f"::warning::account {account_key} carries two terms across its logins "
                 f"({recorded} and {candidate}); keeping "
@@ -231,7 +238,14 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
             # aborted the whole migration over one malformed entry — and a
             # migration that cannot finish leaves the state half re-keyed,
             # which is the condition it exists to remove.
-            candidate = min(recorded, candidate) if comparable else recorded
+            #: The earlier INSTANT, so no device outlives the licence that
+            #: authorised it — and the recorded value kept untouched when the
+            #: two cannot be ordered, because guessing could only move a term
+            #: outwards.
+            if comparable:
+                candidate = recorded if recorded_at <= candidate_at else candidate
+            else:
+                candidate = recorded
         terms.setdefault(account_key, {})["expiresAt"] = candidate
     state.save(path, terms)
 

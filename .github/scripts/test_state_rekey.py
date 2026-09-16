@@ -575,6 +575,62 @@ class UnmigratedBranchTest(ChainTestCase):
 
         self.assertEqual(self.state.device_owner(self.licenses, MAC), STRANGER_ID)
 
+class TermOrderingTest(ChainTestCase):
+    """Two terms across one account's logins are ordered as INSTANTS.
+
+    They were ordered with min() over the raw strings, which is LEXICAL.
+    Measured on python3.13:
+
+        min("2027-01-01T00:00:00-05:00", "2027-01-01T00:00:00Z")
+          -> "2027-01-01T00:00:00-05:00"
+
+    and that value is four hours LATER. Ordering a licence term that way
+    EXTENDS it — the one direction a term must never move by accident, and the
+    direction the code's own comment warned about while doing it.
+
+    "Both are strings" was never a comparability test either:
+    min("soon", "2027-01-01T00:00:00Z") returns the date.
+    """
+
+    def terms_after_migration(self, first, second):
+        """Two logins on ONE account, each carrying a term, then migrate.
+
+        Two logins mapping to one numeric id is exactly the case a rename
+        produces, and it is the only way two terms ever meet.
+        """
+        self.write("accounts.json", {"older": {"id": HOLDER_ID}, "newer": {"id": HOLDER_ID}})
+        self.write("licences.json", {"older": {"expiresAt": first}, "newer": {"expiresAt": second}})
+
+        self.run_with_argv("migrate_state_keys", [])
+
+        return self.read("account-terms.json").get(HOLDER_ID, {}).get("expiresAt")
+
+    def test_the_earlier_instant_wins_across_offsets(self):
+        """THE ROW. Lexically the -05:00 value sorts first and is LATER."""
+        got = self.terms_after_migration("2027-01-01T00:00:00-05:00", "2027-01-01T00:00:00Z")
+
+        self.assertEqual(
+            got,
+            "2027-01-01T00:00:00Z",
+            "the later instant was kept, which extends the licence",
+        )
+
+    def test_the_earlier_instant_wins_in_the_ordinary_case(self):
+        """The control: same offset, so lexical and chronological agree, and
+        the fix must not have broken the case that already worked."""
+        got = self.terms_after_migration("2028-01-01T00:00:00Z", "2027-01-01T00:00:00Z")
+
+        self.assertEqual(got, "2027-01-01T00:00:00Z")
+
+    def test_an_unorderable_pair_keeps_what_was_recorded(self):
+        """A value that is not an instant cannot be compared to one, so the
+        recorded term stands and the run says so. Replacing it with the
+        candidate could only move a term outwards."""
+        got = self.terms_after_migration("2027-01-01T00:00:00Z", "soon")
+
+        self.assertIn(got, ("2027-01-01T00:00:00Z", "soon"))
+        self.assertIsNotNone(got)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,10 +37,17 @@ form. An approval with no enrolment record is REPORTED, with the issue number,
 for a maintainer to re-apply the label.
 """
 import datetime
+import importlib.util
 import json
 import os
 import pathlib
 import sys
+
+_SPEC = importlib.util.spec_from_file_location(
+    "state", pathlib.Path(__file__).with_name("state.py")
+)
+state = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(state)
 
 APPROVED = "license:approved"
 REVOKED = "license:revoked"
@@ -159,43 +166,13 @@ def enrolments() -> dict:
 
 
 def moment(stamp):
-    """Parse an ISO-8601 instant, or return None when it cannot be read.
+    """Delegates to state.instant, which is the one parser.
 
-    None rather than a default: a missing or unreadable timestamp means the
-    comparison below CANNOT be made, and every caller treats that as "do not
-    conclude" rather than as an ordering.
-
-    Three ways it cannot be read, and the first version of this only handled
-    one. Measured on python3.13:
-
-    * absent — the ordinary case for a legacy record;
-    * NOT A STRING. `12345` or a list raises AttributeError on .replace, not
-      ValueError, so a corrupted enrolments.json crashed the reconciliation
-      instead of degrading to "cannot conclude" — the opposite of what the
-      paragraph above promises;
-    * TIMEZONE-NAIVE. "2026-09-15T10:00:00" parses happily into a naive
-      datetime, and comparing that with the aware one GitHub supplies raises
-      TypeError: can't compare offset-naive and offset-aware datetimes. The
-      crash would land one frame away from here, in a comparison that looks
-      total.
-
-    Both of the last two are hand-edited or legacy state rather than anything
-    an attacker supplies — the file is written by this chain — but a reconciler
-    that dies on malformed state stops replaying revocations, and a revocation
-    nobody replays is the silent failure this whole script exists to catch.
+    Kept as a name because republished_after reads better with it, and because
+    a second implementation is how the two drift — migrate_state_keys.py
+    ordering terms with a lexical min() is what that drift looked like.
     """
-    if not isinstance(stamp, str) or not stamp:
-        return None
-    try:
-        parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    #: An instant with no offset names no instant. Refuse it rather than
-    #: assume UTC: guessing would order two records against each other on an
-    #: assumption neither of them made.
-    if parsed.tzinfo is None:
-        return None
-    return parsed
+    return state.instant(stamp)
 
 
 def republished_after(records: dict, decision: dict, subject: str) -> str:
@@ -246,12 +223,12 @@ def withdraw(subject: str) -> bool:
     owner so the identity cannot be squatted afterwards, and licences.json
     survives so revoking every device cannot restart the term.
     """
-    state = licenses_dir()
-    key = state / f"{subject}.pub"
+    state_dir = licenses_dir()
+    key = state_dir / f"{subject}.pub"
     if not key.is_file():
         return False
     key.unlink()
-    sidecar = state / f"{subject}.meta.json"
+    sidecar = state_dir / f"{subject}.meta.json"
     if sidecar.is_file():
         sidecar.unlink()
     return True
@@ -301,9 +278,9 @@ def judge(decision: dict, records: dict) -> tuple:
 
 
 def main() -> None:
-    state = licenses_dir()
-    state.mkdir(parents=True, exist_ok=True)
-    ledger_path = state / LEDGER
+    state_dir = licenses_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    ledger_path = state_dir / LEDGER
     seeding = not ledger_path.exists()
 
     observed = decisions(read_events(sys.argv[1] if len(sys.argv) > 1 else "-"))

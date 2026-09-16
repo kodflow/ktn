@@ -475,12 +475,19 @@ class IssuanceWindowTest(PromoteTestCase):
 
     def test_the_ordinary_window_still_publishes(self):
         """The control. Every row above would pass against a check that
-        refused everything, so the happy path has to be pinned beside them."""
-        self.stage(roster=shifted_roster(iat_offset_hours=0, exp_offset_hours=24))
+        refused everything, so the happy path has to be pinned beside them.
+
+        Asserted BYTE FOR BYTE against what was staged, not merely that a file
+        exists: is_file() is satisfied by an empty file, and "the promotion
+        wrote something" is not the claim — the claim is that it published
+        exactly the bytes that were signed.
+        """
+        staged = shifted_roster(iat_offset_hours=0, exp_offset_hours=24)
+        self.stage(roster=staged)
 
         self.module.main()
 
-        self.assertTrue((self.state / "roster.json").is_file())
+        self.assertEqual((self.state / "roster.json").read_bytes(), staged)
 
 
 if __name__ == "__main__":
