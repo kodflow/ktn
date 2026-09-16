@@ -92,22 +92,46 @@ def conflicts(public_payload, private_payload) -> list:
     )
 
 
+def preflight(public: pathlib.Path, private: pathlib.Path, names: list) -> None:
+    """Refuse the whole run if ANY file conflicts, before moving a single one.
+
+    The refusal was claimed to be total — "a partial move is the state this
+    mechanism exists to prevent" — and it was not: move() checked and moved one
+    file at a time, so a conflict on a LATE file exited after the earlier ones
+    had already been moved and deleted. Exactly the half-finished cutover the
+    docstring promised to avoid.
+
+    The test that covered it passed for the wrong reason: it planted the
+    conflict on account-terms.json, which precedes quotas.json in
+    COMMERCIAL_FILES, so the refusal happened before anything moved. Ordering
+    luck, not a property.
+
+    Two passes. This one decides; move() then only moves.
+    """
+    clashes = []
+    for name in names:
+        clash = conflicts(state.load(public / name), state.load(private / name))
+        if clash:
+            clashes.append(f"{name} ({', '.join(clash)})")
+    if not clashes:
+        return
+
+    fail(
+        f"{len(clashes)} file(s) hold different values on the public and private sides: "
+        f"{'; '.join(clashes)}. That is two answers to one question, not a stale "
+        "duplicate, and choosing either would discard a contract fact. NOTHING was "
+        "moved — reconcile them by hand and run this again."
+    )
+
+
 def move(public: pathlib.Path, private: pathlib.Path, name: str) -> int:
     """Merge one file into the private store and drop the public copy.
 
-    Returns how many top-level entries the private side gained.
+    Conflicts are already ruled out by preflight, so this only moves. Returns
+    how many top-level entries the private side gained.
     """
     public_payload = state.load(public / name)
     private_payload = state.load(private / name)
-
-    clash = conflicts(public_payload, private_payload)
-    if clash:
-        fail(
-            f"{name} holds different values for {', '.join(clash)} on the public and "
-            "private sides. That is two answers to one question, not a stale duplicate, "
-            "and choosing either would discard a contract fact. Nothing was moved — "
-            "reconcile them by hand and run this again."
-        )
 
     if isinstance(public_payload, dict) and isinstance(private_payload, dict):
         gained = len([key for key in public_payload if key not in private_payload])
@@ -134,12 +158,16 @@ def main() -> None:
         )
         return
 
-    if private.resolve() == public.resolve():
+    resolved_private, resolved_public = private.resolve(), public.resolve()
+    if resolved_private == resolved_public or resolved_public in resolved_private.parents:
         fail(
-            "PRIVATE_STATE_DIR points at the public directory. That configures nothing, "
-            "and a different path on a public branch is still public — moving files "
-            "within it would delete the only copy of each. Point it at a store the "
-            "`licenses` branch is not."
+            "PRIVATE_STATE_DIR is inside the public directory "
+            f"({resolved_private} under {resolved_public}). state.py says it in one line — "
+            "'a different path on a public branch is still public' — so this would move "
+            "every commercial file from one published location to another and report a "
+            "completed cutover. Equality alone did not catch it: state/private/ is not "
+            "state/, and is just as public. Point it at a store the `licenses` branch "
+            "is not."
         )
 
     outstanding = pending(public)
@@ -155,6 +183,10 @@ def main() -> None:
             "with public commercial files is a half-finished cutover."
         )
         return
+
+    #: Every conflict decided BEFORE the first move, so a refusal leaves both
+    #: sides exactly as it found them.
+    preflight(public, private, outstanding)
 
     private.mkdir(parents=True, exist_ok=True)
     for name in outstanding:

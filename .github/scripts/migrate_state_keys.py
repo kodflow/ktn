@@ -213,8 +213,15 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
             continue
         account_key = state.account_key_for_login(state_dir, login)
         candidate = entry["expiresAt"]
-        recorded = terms.get(account_key, {}).get("expiresAt")
-        if recorded is not None and recorded != candidate:
+        #: MEMBERSHIP, not `.get()`. A present `null` and an absent key both
+        #: read as None, so a recorded null was treated as "nothing here yet"
+        #: and silently overwritten by the legacy candidate — skipping the
+        #: conflict path entirely. state.account_term uses a sentinel for
+        #: exactly this reason; this call site was the layer that undid it.
+        recorded_entry = terms.get(account_key, {})
+        recorded_present = "expiresAt" in recorded_entry
+        recorded = recorded_entry.get("expiresAt")
+        if recorded_present and recorded != candidate:
             #: Parsed, not merely typed. "Both are strings" is not a
             #: comparability test: min() orders them LEXICALLY, and two ISO
             #: strings with different offsets do not sort chronologically —

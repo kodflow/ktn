@@ -215,7 +215,27 @@ def ci_entitlements(state_dir: pathlib.Path) -> dict:
             continue
         entry = {}
         expires_at = state.account_term(state_dir, account_key)
-        if expires_at is not state.ABSENT and expires_at:
+        #: `and expires_at` used to stand here, which is precisely the
+        #: truthiness test the ABSENT sentinel exists to make unnecessary.
+        #: account_term's own doc says why: "A recorded null, 0, false or "" is
+        #: a CORRUPT entry, and reading one as absent would... hand it a fresh
+        #: year". Here it did worse than that — it emitted the CI entitlement
+        #: with NO exp at all, and a client reads a missing exp as no recorded
+        #: end. A bad edit became an unbounded automation right.
+        if expires_at is not state.ABSENT:
+            #: Present, so it must be usable. A corrupt term REMOVES the CI
+            #: entitlement rather than publishing it unbounded: losing CI until
+            #: somebody fixes the entry is visible and recoverable, and an
+            #: automation right with no end is neither.
+            if state.instant(expires_at) is None:
+                print(
+                    f"::warning::account {account_key} has a recorded CI term that is not an "
+                    f"instant ({expires_at!r}), so no CI entitlement is published for it. "
+                    "Publishing it without an expiry would be an automation right that never "
+                    "ends; fix the entry in account-terms.json."
+                )
+
+                continue
             entry["exp"] = expires_at
         # Two licences can legitimately name the same beneficiary — two members
         # of one organisation, each with their own devices. The owner is covered

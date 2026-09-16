@@ -512,24 +512,60 @@ class PrivateMigrationTest(PublicStateTestCase):
     def test_the_same_key_with_different_values_refuses_everything(self):
         """Two answers to one question. Choosing either discards a contract.
 
-        And the refusal is total: a partial move leaves exactly the
-        half-finished state this whole mechanism exists to prevent, so the
-        second file must still be public afterwards.
+        The conflict is planted on the LAST commercial file and a clean one on
+        the FIRST, which is the ordering that measures the claim. The previous
+        version of this test did the opposite — the conflict on
+        account-terms.json, which precedes quotas.json in COMMERCIAL_FILES —
+        so the refusal happened before anything had moved and the row passed
+        on iteration order rather than on a property. With the conflict last,
+        a script that checks and moves one file at a time has already moved
+        and DELETED the clean one by the time it refuses: exactly the
+        half-finished cutover the refusal claims to prevent.
         """
         self.use_private_store()
-        self.write(self.public, "account-terms.json", {HOLDER_ID: "2027-01-01T00:00:00Z"})
-        self.write(self.private, "account-terms.json", {HOLDER_ID: "2030-01-01T00:00:00Z"})
-        self.write(self.public, "quotas.json", {HOLDER_ID: 5})
+        #: First in COMMERCIAL_FILES, and clean: it is what a one-pass script
+        #: moves before it discovers the conflict below.
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+        #: Last in COMMERCIAL_FILES, and conflicting.
+        self.write(self.public, "unresolved-accounts.json", {"a-holder": "one"})
+        self.write(self.private, "unresolved-accounts.json", {"a-holder": "another"})
 
         with self.assertRaises(SystemExit) as raised:
             self.migrate()
 
         self.assertNotEqual(raised.exception.code, 0)
-        self.assertEqual(
-            json.loads((self.private / "account-terms.json").read_text()),
-            {HOLDER_ID: "2030-01-01T00:00:00Z"},
+        #: THE assertion: the clean file is still public, so nothing moved.
+        self.assertTrue(
+            (self.public / "accounts.json").is_file(),
+            "accounts.json was moved before the conflict was found; the refusal is not total",
         )
-        self.assertTrue((self.public / "quotas.json").is_file())
+        self.assertFalse((self.private / "accounts.json").exists())
+        #: And the conflicting private value is untouched.
+        self.assertEqual(
+            json.loads((self.private / "unresolved-accounts.json").read_text()),
+            {"a-holder": "another"},
+        )
+
+    def test_a_private_store_inside_the_public_directory_is_refused(self):
+        """A different path on a public branch is still public.
+
+        Equality alone did not catch this: state/private/ is not state/, and
+        is just as published. Without the containment check the migration
+        would move every commercial file from one public location to another
+        and report a completed cutover — the worst outcome this mechanism can
+        produce, because the configuration then reads as done.
+        """
+        inside = self.public / "private"
+        inside.mkdir()
+        os.environ["PRIVATE_STATE_DIR"] = str(inside)
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        with self.assertRaises(SystemExit) as raised:
+            self.migrate()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertTrue((self.public / "accounts.json").is_file())
+        self.assertFalse((inside / "accounts.json").exists())
 
     def test_check_reports_without_moving_anything(self):
         """A report must never be the thing that performs the change."""

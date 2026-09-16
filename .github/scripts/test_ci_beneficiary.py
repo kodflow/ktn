@@ -407,6 +407,63 @@ class EntitlementKeyingTest(CIBeneficiaryTestCase):
 
         self.assertEqual(self.entitlements(), {ORG_ID: {}})
 
+    # --- a corrupt recorded term must not become an unbounded CI right ---
+    # #: Inherits EntitlementKeyingTest's harness — enrol, write and
+    # #: entitlements — because that is the class wired to build_roster, which
+    # #: is the module under test here.
+    # """A corrupt recorded term must not become an unbounded CI right.
+    #
+    # account_term returns a SENTINEL for absence precisely so a recorded null,
+    # 0, false or "" stays distinguishable from an unrecorded term — its own
+    # docstring says reading one as absent would "hand it a fresh year". The CI
+    # publisher then tested `is not ABSENT and expires_at`, and that second
+    # clause put the defect back one layer up: the entitlement was emitted with
+    # NO exp, and a client reads a missing exp as no recorded end. A bad edit in
+    # account-terms.json became an automation right that never ends.
+    #
+    # Removing the entitlement is the chosen answer. Losing CI until somebody
+    # fixes the entry is visible and recoverable; an unbounded right is neither.
+
+    def entitlements_with_term(self, term):
+        """Build the roster with this literal recorded term."""
+        self.enrol(term=None)
+        #: Written verbatim, bypassing set_account_term so the corrupt shapes
+        #: a bad edit produces can actually be planted.
+        self.write("account-terms.json", {MEMBER_ID: {"expiresAt": term}})
+        self.write("ci-owners.json", {MEMBER_ID: {"beneficiary": MEMBER_ID, "decidedBy": "maintainer"}})
+
+        return self.entitlements()
+
+    def test_a_usable_term_is_published(self):
+        """The control: without it every row below passes on a publisher that
+        emits nothing at all."""
+        got = self.entitlements_with_term("2027-03-01T00:00:00Z")
+
+        self.assertEqual(got.get(MEMBER_ID, {}).get("exp"), "2027-03-01T00:00:00Z")
+
+    def test_a_null_term_publishes_no_entitlement(self):
+        """THE ROW. It used to publish the account with no exp at all."""
+        got = self.entitlements_with_term(None)
+
+        self.assertNotIn(
+            MEMBER_ID, got,
+            "a corrupt term published an entitlement with no expiry, which a client reads as no recorded end",
+        )
+
+    def test_an_empty_term_publishes_no_entitlement(self):
+        """Same shape, different falsy value."""
+        self.assertNotIn(MEMBER_ID, self.entitlements_with_term(""))
+
+    def test_a_zero_term_publishes_no_entitlement(self):
+        """And a number, which is what a hand-edited epoch looks like."""
+        self.assertNotIn(MEMBER_ID, self.entitlements_with_term(0))
+
+    def test_an_unparseable_term_publishes_no_entitlement(self):
+        """Present, truthy, and not an instant — the case the truthiness test
+        would have let through even after the sentinel check."""
+        self.assertNotIn(MEMBER_ID, self.entitlements_with_term("soon"))
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -227,6 +227,35 @@ jobs:
           python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}" "${ISSUE}" "${CI_OWNER}"
           python3 .github/scripts/record_expiry.py "${UUID}"
 
+      # THE PRIVATE HALF FIRST, and the order is the whole point.
+      #
+      # The public branch carries <uuid>.pub, which is the AUTHORISATION: the
+      # signer builds the roster from the published keys. The private store
+      # carries what BOUNDS it — the owner binding, the term, the quota. With
+      # the public push first, a failure here published a key with no record
+      # of who holds it or when it ends: a device authorised by a roster that
+      # cannot say what limits it, healing only if somebody noticed.
+      #
+      # Reversed, the same failure leaves an owner binding with no published
+      # key. Nothing is authorised, nobody is affected, and the next approval
+      # of that issue completes it. Never publish an authorisation before the
+      # record that bounds it.
+      #
+      # `git diff --quiet` guards a no-op: most runs write nothing private,
+      # and a schedule must not fail over having had nothing to say.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: record the publication"
+          git push
+
+      # After the private half, so a key is never published ahead of the
+      # record that bounds it. See the step above.
       - name: Commit
         working-directory: state
         env:
@@ -238,20 +267,6 @@ jobs:
           git add -A
           git commit -m "licence: publish ${UUID}"
           git push origin HEAD:licenses
-
-      # The private half is a separate repository, so it needs its own commit.
-      # `git diff --quiet` guards a no-op: most runs write nothing private, and
-      # a schedule must not fail over having had nothing to say.
-      - name: Commit the private state
-        if: vars.PRIVATE_STATE_REPO != ''
-        working-directory: private
-        run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet || git commit -m "licence: record the publication"
-          git push
 
       - name: Close the request
         env:
