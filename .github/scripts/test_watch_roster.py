@@ -15,6 +15,8 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -276,6 +278,110 @@ class ReportTest(WatchTestCase):
             self.module.main()
 
         self.assertNotEqual(raised.exception.code, 0)
+
+class RealSignatureTest(unittest.TestCase):
+    """openssl_verifier itself, against a key this test mints and signs with.
+
+    Every other authenticity test hands `judge` a boolean stub — `reject`, or
+    None — so the verifier's OWN body was never executed: not the
+    `-rawin -pubin` flag pair, not the temp-file staging, not the mapping of an
+    exit status to a verdict. A typo in any of those would make the watcher
+    report "does NOT verify" for every genuine roster it is watching, or — the
+    direction that matters — report a pass it never established.
+
+    So this drives the real command with real material. The negative rows are
+    what make it worth having: a verifier that returned True unconditionally
+    would satisfy the positive row on its own.
+    """
+
+    def setUp(self):
+        # FAILS rather than skips when openssl is absent. A skipped class reads
+        # exactly like a passing one in the summary, and "a check that could
+        # not be made must never read as a check that passed" is the rule
+        # watch_roster.py itself is built on — it would be a strange rule to
+        # keep in the code and drop in the test of that code. openssl is also
+        # not optional here in any real sense: openssl_verifier shells out to
+        # it, so a machine without it cannot run the watcher at all.
+        self.assertIsNotNone(
+            shutil.which("openssl"),
+            "openssl is required: openssl_verifier shells out to it, so its absence "
+            "means the watcher cannot work on this machine, not that this test is moot",
+        )
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = pathlib.Path(self.tmp.name)
+        os.environ["RUNNER_TEMP"] = str(self.dir)
+        self.addCleanup(os.environ.pop, "RUNNER_TEMP", None)
+        self.module = load_script()
+        self.payload = b'{"iat":"2026-09-16T00:00:00Z","subjects":{}}'
+
+    def mint(self, name):
+        """One ed25519 pair, returning the path of its PUBLIC half."""
+        private = self.dir / f"{name}.pem"
+        public = self.dir / f"{name}.pub.pem"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "ed25519", "-out", str(private)],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+            check=True, capture_output=True,
+        )
+        return private, public
+
+    def sign(self, private, payload):
+        """The detached raw ed25519 signature the signer produces."""
+        message = self.dir / "message.bin"
+        message.write_bytes(payload)
+        signature = self.dir / "signature.bin"
+        subprocess.run(
+            [
+                "openssl", "pkeyutl", "-sign", "-rawin",
+                "-inkey", str(private), "-in", str(message), "-out", str(signature),
+            ],
+            check=True, capture_output=True,
+        )
+        return signature.read_bytes()
+
+    def test_a_genuine_signature_verifies(self):
+        """The flags and the staging are right, or nothing below means anything."""
+        private, public = self.mint("vendor")
+        verify = self.module.openssl_verifier(public)
+
+        self.assertTrue(verify(self.payload, self.sign(private, self.payload)))
+
+    def test_a_modified_payload_does_not_verify(self):
+        """One byte. This is what a CDN serving altered content looks like."""
+        private, public = self.mint("vendor")
+        signature = self.sign(private, self.payload)
+        verify = self.module.openssl_verifier(public)
+
+        self.assertFalse(verify(self.payload + b" ", signature))
+
+    def test_another_key_does_not_verify(self):
+        """THE spoofing case: a well-formed signature by the wrong signer.
+
+        A roster signed by somebody else is exactly what the vendor key is
+        checked against, and it must fail for that reason rather than by
+        happening to be malformed.
+        """
+        other_private, _ = self.mint("impostor")
+        _, public = self.mint("vendor")
+        verify = self.module.openssl_verifier(public)
+
+        self.assertFalse(verify(self.payload, self.sign(other_private, self.payload)))
+
+    def test_garbage_in_place_of_a_signature_does_not_verify(self):
+        """It must refuse, not raise: a raising verifier kills the watcher
+        before it reaches the origins it has not judged yet."""
+        _, public = self.mint("vendor")
+        verify = self.module.openssl_verifier(public)
+
+        self.assertFalse(verify(self.payload, b"not a signature"))
+
+    def test_no_key_configured_yields_no_verifier(self):
+        """None is what makes the caller report "NOT CHECKED" instead of a pass."""
+        self.assertIsNone(self.module.openssl_verifier(self.dir / "absent.pem"))
 
 
 if __name__ == "__main__":
