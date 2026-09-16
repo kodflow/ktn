@@ -110,6 +110,31 @@ def satisfied_by(floor: str, tags: list[str]) -> bool:
     return False
 
 
+def highest_readable(tags: list) -> str:
+    """The greatest tag that parses as SemVer, or "none".
+
+    Same tolerance ``satisfied_by`` applies, for the same reason it gives: the
+    mirror's tag namespace is not this script's to police, and one hand-made
+    tag must not make a real release invisible.
+
+    It exists because the message below used to call ``precedence`` on every
+    tag with no guard, one line after ``satisfied_by`` established that rule. A
+    single unreadable tag on the mirror therefore replaced the ``::error::``
+    that explains the refusal with a Python traceback — the same exit code, and
+    nothing learned from it. Diagnostics are the whole value of this step; the
+    refusal itself is already decided by the line above.
+    """
+    readable = []
+    for tag in tags:
+        try:
+            readable.append((precedence(tag), tag))
+        except ValueError:
+            continue
+    if not readable:
+        return "none"
+    return max(readable)[1]
+
+
 def main() -> None:
     """Check the floor against the mirror, or say why it could not be."""
     floor = recorded_floor(licenses_dir())
@@ -128,7 +153,7 @@ def main() -> None:
         return
 
     if not satisfied_by(floor, tags):
-        highest = max(tags, key=lambda tag: precedence(tag), default="none") if tags else "none"
+        highest = highest_readable(tags)
         print(
             f"::error::the recorded floor {floor} is satisfied by no release on {repo} "
             f"(highest published: {highest}). Publishing it would tell every client to "

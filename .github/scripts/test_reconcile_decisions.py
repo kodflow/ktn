@@ -20,6 +20,9 @@ import unittest
 
 SCRIPT = pathlib.Path(__file__).with_name("reconcile_decisions.py")
 MAC = "eb56f295-9428-49b1-9dc3-0ebc6e383444"
+# A SECOND device, so a test can show that another subject enrolling later
+# says nothing about this one.
+OTHER_MAC = "7c1d0a42-5f63-4b8e-9a20-11f3c4d5e6a7"
 WIN = "11111111-2222-4333-8444-555555555555"
 PUBLIC_KEY = "ssh-ed25519 AAAAtestfixturenotarealkeyAA\n"
 
@@ -342,6 +345,92 @@ class LedgerTest(ReconcileTestCase):
         self.module.main()
 
         self.assertFalse((self.state / f"{MAC}.pub").exists())
+
+
+class SupersededRevocationTest(ReconcileTestCase):
+    """A stale revocation must not silently undo a newer approval.
+
+    A revocation is replayed on the strength of its event id alone: the id is
+    not in the ledger, so the decision was never reconciled. That is the right
+    identity for "has this been processed" and says nothing about whether the
+    answer is still current.
+
+    The gap: the ledger is committed and pushed by the same step, so a failed
+    push loses the record of a withdrawal that DID happen. If the device
+    re-enrols in the meantime — a new issue, a new approval, the same uuid —
+    the next run reads the old revocation as outstanding and withdraws a key a
+    maintainer has since republished. Nothing reported it, because from the
+    ledger's point of view the revocation simply took effect.
+    """
+
+    def republish(self, uuid, issue, at):
+        """Enrol under a NEW issue with a real timestamp, as an approval does."""
+        self.publish(uuid, issue=issue)
+        enrolments = self.load("enrolments.json")
+        enrolments[str(issue)] = {"subject": uuid, "login": "kodflow", "account": "1", "at": at}
+        self.save("enrolments.json", enrolments)
+
+    def test_a_revocation_is_not_replayed_over_a_later_republication(self):
+        """THE ROW. Before this, the key was withdrawn and nothing said so."""
+        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertTrue((self.state / f"{MAC}.pub").is_file())
+        self.assertEqual(self.ledger()[-1]["outcome"], "superseded")
+
+    def test_it_needs_a_person_rather_than_passing_quietly(self):
+        """Whether the revocation still stands is a decision, not a default.
+
+        So it goes in the attention bucket: `applied` stays at zero and the
+        reconciliation report names it. Publishing a "superseded" line nobody
+        reads would be the same silence with extra steps.
+        """
+        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertEqual(self.outputs()["applied"], "0")
+        self.assertEqual(self.outputs()["changed"], "false")
+
+    def test_an_earlier_republication_does_not_excuse_the_revocation(self):
+        """Order is the whole rule. A key published BEFORE the revocation is
+        exactly what the revocation was about, and must still be withdrawn."""
+        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, at="2026-09-15T09:30:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertFalse((self.state / f"{MAC}.pub").is_file())
+        self.assertEqual(self.ledger()[-1]["outcome"], "applied")
+
+    def test_a_different_subject_is_not_a_republication(self):
+        """Another device enrolling later says nothing about this one."""
+        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
+        self.republish(OTHER_MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertFalse((self.state / f"{MAC}.pub").is_file())
+        self.assertEqual(self.ledger()[-1]["outcome"], "applied")
+
+    def test_an_unreadable_timestamp_replays_as_before(self):
+        """Refusing on a timestamp it could not read would be the opposite
+        failure: a revocation dropped because a record was malformed."""
+        self.publish(MAC, issue=7)
+        self.publish(MAC, issue=8)
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertFalse((self.state / f"{MAC}.pub").is_file())
+        self.assertEqual(self.ledger()[-1]["outcome"], "applied")
 
 
 if __name__ == "__main__":

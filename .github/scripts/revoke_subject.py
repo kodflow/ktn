@@ -60,13 +60,36 @@ def section(body: str, heading: str) -> str:
 
 
 def recorded_subject(issue: str) -> str:
-    """What this issue actually published, if it was recorded at approval time."""
+    """What this issue actually published, if it was recorded at approval time.
+
+    Validated against UUID_RE like the body path is, and REFUSED rather than
+    ignored when it does not match. Two reasons the check is not redundant
+    even though our own approval chain writes this file:
+
+    * falling back to "" on a corrupt record would silently downgrade to the
+      EDITABLE source — the weaker of the two paths, chosen by the failure of
+      the stronger one, which is the wrong direction for a failure to push a
+      decision;
+    * this value is written to GITHUB_OUTPUT, where a newline ends the
+      assignment and starts another. Constraining the value is what closes
+      that, rather than escaping it at the point of use and hoping every
+      future point of use remembers.
+    """
     if not issue:
         return ""
     path = licenses_dir() / "enrolments.json"
     if not path.exists():
         return ""
-    return json.loads(path.read_text() or "{}").get(issue, {}).get("subject", "")
+    recorded = json.loads(path.read_text() or "{}").get(issue, {}).get("subject", "")
+    if not recorded:
+        return ""
+    if not UUID_RE.match(recorded):
+        fail(
+            f"enrolments.json records subject {recorded!r} for issue {issue}, which is not a "
+            "uuid. A corrupt enrolment record is a state problem to fix, not something to "
+            "route around by re-reading an editable issue body."
+        )
+    return recorded
 
 
 def claimed_subject(body: str, author: str, author_id: str) -> str:

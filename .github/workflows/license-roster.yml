@@ -366,6 +366,14 @@ jobs:
       # to protest a condition the run cannot fix. It BECOMES a gate the moment
       # a private store is configured, because a half-finished cutover reads as
       # a finished one from the configuration alone. Hence no `|| true`.
+      #
+      # It runs BEFORE the candidate is staged, so its roster-trio check
+      # tolerates a branch that has never published — a branch with no
+      # subjects has nothing to serve, and refusing here killed the job before
+      # it could build the first roster, which made a fresh `licenses` branch
+      # impossible to bootstrap at all. The strict form of that check runs
+      # after publication, where absence can only mean a run that produced
+      # nothing.
       - name: Report what the public branch discloses
         env:
           LICENSES_DIR: state
@@ -406,15 +414,31 @@ jobs:
           # events: a decision's identity is that event's own id — a maintainer
           # is the only one who can produce one, and nobody can edit one.
           #
-          # Costs two calls plus one per licence issue, three times an hour. At
-          # this authority's size that is a rounding error against the 1000/h
-          # GITHUB_TOKEN budget; past a few hundred issues, move to the
-          # repo-wide /issues/events endpoint, whose cost follows activity
-          # rather than history.
+          # Costs one call per 100 labelled issues plus one per licence issue,
+          # three times an hour. At this authority's size that is a rounding
+          # error against the 1000/h GITHUB_TOKEN budget; past a few hundred
+          # issues, move to the repo-wide /issues/events endpoint, whose cost
+          # follows activity rather than history.
+          #
+          # PAGINATED RATHER THAN CAPPED. This was `gh issue list --limit 500`,
+          # and that cap was a bound on CORRECTNESS, not on cost: past 500
+          # labelled issues the oldest fall out of the window, and this loop is
+          # what replays a revocation whose state commit never landed. A lost
+          # APPROVAL has a customer asking about it; a lost REVOCATION has
+          # nobody — so the one that silently stops being reconciled is the one
+          # that matters. Raising the cap moves the cliff; detecting saturation
+          # would trade a security hole for a signing outage. Paginating removes
+          # the choice.
+          #
+          # `--paginate` without `--slurp` emits each page separately, so --jq
+          # runs per page; /issues includes pull requests, hence the
+          # `.pull_request == null` filter, which `gh issue list` did for us.
           for label in license:approved license:revoked; do
-            gh issue list --repo "${REPO}" --label "${label}" --state all --limit 500 \
-              --json number --jq '.[].number'
+            gh api --paginate \
+              "/repos/${REPO}/issues?labels=${label//:/%3A}&state=all&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | .number'
           done | sort -un > "${tmp}/licence-issues.txt"
+          echo "reconciling $(wc -l < "${tmp}/licence-issues.txt") licence issue(s)"
 
           while read -r number; do
             [ -n "${number}" ] || continue
@@ -564,6 +588,17 @@ jobs:
           LICENSES_DIR: state
           CANDIDATE_DIR: ${{ steps.candidate.outputs.dir }}
         run: python3 .github/scripts/promote_roster.py
+
+      # The other half of the bootstrap tolerance above, and the reason it is
+      # safe. Before this point an absent roster can mean "this branch has not
+      # published yet"; after promote_roster.py has run it can only mean the
+      # publishing run produced nothing, so absence is an error with no
+      # exceptions. Placed before the commit so a tree that should not be
+      # pushed is not pushed.
+      - name: Verify the published trio is actually there
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/audit_public_state.py --require-artefacts
 
       - name: Commit the signed pair
         working-directory: state

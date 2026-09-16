@@ -19,7 +19,9 @@ what is pinned is that both answers are expressible and that neither is
 guessed.
 """
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -188,6 +190,55 @@ class BeneficiaryRecordingTest(CIBeneficiaryTestCase):
         entry = self.ci_owners()[MEMBER_ID]
         self.assertEqual(entry["beneficiary"], ORG_ID)
         self.assertEqual(entry["decidedBy"], "maintainer")
+
+    def test_two_disagreeing_labels_refuse_to_decide(self):
+        """THE COIN TOSS. A billing fact settled by API list order.
+
+        Labels arrive in whatever order the API returns them — an order no
+        maintainer chose and none can see. A maintainer who applied
+        `ciOwner:123`, thought better of it, and applied `ciOwner:456` without
+        removing the first got whichever came out on top, and the "beneficiary
+        moved" warning could not fire because no value had been decided yet: a
+        first arbitration was silent by construction.
+
+        The whole doctrine of this function is that neither answer is inferred.
+        Picking one here was the inference.
+        """
+        self.record(claimed="some-org", labels=[f"ciOwner:{ORG_ID}", "ciOwner:999999"])
+
+        entry = self.ci_owners()[MEMBER_ID]
+        self.assertNotIn("beneficiary", entry)
+        self.assertEqual(entry["claimed"], "some-org")
+
+    def test_two_identical_labels_are_one_answer(self):
+        """Said twice is not ambiguous, and must not cost the customer CI."""
+        self.record(claimed="some-org", labels=[f"ciOwner:{ORG_ID}", f"ciOwner:{ORG_ID}"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["beneficiary"], ORG_ID)
+
+    def test_an_ambiguous_grant_with_no_claim_is_still_reported(self):
+        """The warning must precede the early return, or it is unreachable.
+
+        `record_ci_beneficiary` returns immediately when nothing was claimed
+        AND nothing was decided — and two disagreeing labels resolve to
+        "nothing decided". Computing the ambiguity after that check would make
+        the outright-grant case silent.
+        """
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            self.record(labels=[f"ciOwner:{ORG_ID}", "ciOwner:999999"])
+
+        self.assertIn("disagreeing", captured.getvalue())
+
+    def test_a_decided_beneficiary_survives_an_ambiguous_relabel(self):
+        """Refusing to decide must not UNDO a decision already taken.
+
+        The refusal degrades to "no new decision", not to "no decision" — the
+        recorded beneficiary keeps its CI seat while the labels are sorted out.
+        """
+        self.record(claimed="some-org", labels=[f"ciOwner:{ORG_ID}"])
+        self.record(claimed="some-org", labels=[f"ciOwner:{ORG_ID}", "ciOwner:999999"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["beneficiary"], ORG_ID)
 
     def test_ciowner_self_is_a_decision_not_an_absence(self):
         """The other answer, and it has to be sayable.

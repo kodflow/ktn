@@ -94,19 +94,34 @@ def record_account_id(author: str, account_id: str) -> None:
     print(f"recorded @{author} as account {account_id}")
 
 
-def ci_owner_decision(labels: list) -> str:
-    """The `ciOwner:` label a maintainer applied, or "" if none.
+def ci_owner_decisions(labels: list) -> list:
+    """Every DISTINCT `ciOwner:` claim in the label set, in label order.
 
     Read from the FULL current label set rather than the one that triggered the
     run, for the same reason `expireAt:` is: the decision has to be sayable in
     the same breath as the approval, and a label applied afterwards did not
     exist when the approval ran.
+
+    Returns a list rather than the first match, because the first match was a
+    coin toss. Labels arrive in whatever order the API returns them — an order
+    no maintainer chose and none can see — so a maintainer who applied
+    `ciOwner:123`, thought better of it, and applied `ciOwner:456` without
+    removing the first got whichever came out on top. The CI seat is a billing
+    fact; it is not settled by list order.
+
+    The caller refuses to decide when this returns more than one. That is the
+    doctrine of this whole file — "both answers are expressible and neither is
+    inferred" — and arbitrating here would have been the inference.
+
+    Duplicates of the SAME value collapse: two identical labels are one
+    answer, said twice, and there is nothing ambiguous about it.
     """
+    claims = []
     for name in labels:
         matched = CI_OWNER_LABEL_RE.match(name)
-        if matched:
-            return matched.group(1)
-    return ""
+        if matched and matched.group(1) not in claims:
+            claims.append(matched.group(1))
+    return claims
 
 
 def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
@@ -137,8 +152,32 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
     belongs to the organisation or to the member who bought the licence is a
     billing question; both answers are expressible (`ciOwner:<id>` and
     `ciOwner:self`) and neither is inferred.
+
+    Nor is a third one. Two disagreeing `ciOwner:` labels used to resolve by
+    whichever the API listed first — an inference dressed as a reading, in the
+    one function whose whole point is that it does not infer. It now refuses
+    and stays UNRESOLVED.
     """
-    decision = ci_owner_decision(labels)
+    decisions = ci_owner_decisions(labels)
+    # Reported BEFORE the early return, so an ambiguous set is never silent —
+    # including when nothing was claimed and a maintainer is granting a seat
+    # outright. The "moved" warning further down only fires once a value has
+    # been decided, so without this a first arbitration was the one nobody saw.
+    if len(decisions) > 1:
+        print(
+            f"::warning::this approval carries {len(decisions)} disagreeing `ciOwner:` "
+            f"labels ({', '.join(sorted(decisions))}). Refusing to pick one: they arrive "
+            "in whatever order the API returns and the CI seat is a billing fact, not a "
+            "list-order one. The entitlement stays UNRESOLVED — devices are published and "
+            "working, CI is not covered — until exactly one `ciOwner:` label remains on an "
+            "approval. Remove the labels that no longer apply and re-apply `license:approved`."
+        )
+        # Degrade to the documented middle state rather than failing the
+        # approval: a label typo must not hold a paying customer's device
+        # enrolment hostage, and build_roster.py already omits the CI entry and
+        # says so on every build, so this stays visible until it is fixed.
+        decisions = []
+    decision = decisions[0] if decisions else ""
     if not (claimed or decision):
         return
     if not account_id:

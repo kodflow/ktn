@@ -282,5 +282,107 @@ class SizeTest(PromoteTestCase):
         self.assertEqual((self.state / "roster.json").read_bytes(), roster)
 
 
+class RunIdentityTest(PromoteTestCase):
+    """"Signed in THIS run" needs a run to be named.
+
+    The attestation's run/attempt are compared against the environment's. Both
+    unset compared EQUAL — `"" == ""` — so the property degenerated to "signed
+    by a run with no identifier" exactly where somebody would be holding the
+    signing key by hand, which is the one place it needed to hold.
+    """
+
+    def test_an_unset_run_id_refuses_rather_than_matching_itself(self):
+        """THE ROW. Two empty strings are not an identity."""
+        self.stage(run="", attempt="")
+        os.environ.pop("GITHUB_RUN_ID", None)
+        os.environ.pop("GITHUB_RUN_ATTEMPT", None)
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_an_unset_attempt_refuses_too(self):
+        """Half an identity is not one: a re-run is a different publication."""
+        self.stage(run="4242", attempt="")
+        os.environ["GITHUB_RUN_ID"] = "4242"
+        os.environ.pop("GITHUB_RUN_ATTEMPT", None)
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+
+class PlaceResidueTest(PromoteTestCase):
+    """A half-written publication must not survive its own failure.
+
+    `place` writes `<name>.incoming` beside the destination and renames it
+    over, which is what makes a reader see either the old file or the new one.
+    A write that failed left the staged file behind — and the NEXT run's
+    "Commit the reconciliation" step stages the whole directory with
+    `git add -A`, so the residue of a failed publication could reach a PUBLIC
+    branch.
+    """
+
+    def test_a_failed_write_leaves_no_incoming_file(self):
+        """A control, not the discriminating row — and worth saying so.
+
+        An unreadable SOURCE raises inside `source.read_bytes()`, which is
+        evaluated before `staged.write_bytes` is entered, so no staged file
+        ever existed and this passed against the unfixed code too. The row
+        that discriminates is the cancelled write below, where the staged file
+        is already on disk when the failure arrives.
+        """
+        destination = self.state / "roster.json"
+        missing = self.candidate / "does-not-exist.json"
+
+        with self.assertRaises(OSError):
+            self.module.place(missing, destination)
+
+        self.assertFalse(
+            destination.with_name("roster.json.incoming").exists(),
+            "a residue here is committed by the next run's `git add -A`",
+        )
+
+    def test_a_cancelled_write_leaves_no_incoming_file(self):
+        """THE ROW. The staged file exists and the rename never happens.
+
+        Caught as BaseException rather than Exception because a cancelled
+        workflow arrives as KeyboardInterrupt, and a cancelled run is exactly
+        when a partial write is most likely. Measured red against the unfixed
+        code: `roster.json.incoming` survived.
+        """
+        destination = self.state / "roster.json"
+        source = self.candidate / "roster.json"
+        source.write_bytes(b"{}")
+
+        original = self.module.os.replace
+
+        def interrupt(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        self.module.os.replace = interrupt
+        self.addCleanup(setattr, self.module.os, "replace", original)
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.module.place(source, destination)
+
+        self.assertFalse(destination.with_name("roster.json.incoming").exists())
+
+    def test_a_successful_write_leaves_no_incoming_file_either(self):
+        """The ordinary path: renamed away, so nothing is left to sweep up."""
+        destination = self.state / "roster.json"
+        source = self.candidate / "roster.json"
+        source.write_bytes(b'{"ok":true}')
+
+        self.module.place(source, destination)
+
+        self.assertEqual(destination.read_bytes(), b'{"ok":true}')
+        self.assertFalse(destination.with_name("roster.json.incoming").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

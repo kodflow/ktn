@@ -93,5 +93,39 @@ class TestUnreachableIsNotUnsatisfied(unittest.TestCase):
             self.assertFalse(cvf.satisfied_by(floor, []))
 
 
+class HighestReadableTest(unittest.TestCase):
+    """The diagnostic that used to be a traceback.
+
+    `satisfied_by` skips tags that do not parse, and its docstring makes that a
+    rule: the mirror's tag namespace is not this script's to police, and one
+    hand-made tag must not make a real release invisible. One line later the
+    error message called `precedence` on every tag with no guard — so a single
+    hand-made tag replaced the ::error:: that explains the refusal with a
+    ValueError. Same exit code, nothing learned, and diagnostics are this
+    step's entire value.
+    """
+
+    def test_it_names_the_highest_of_several(self):
+        """Ordered by SemVer precedence, not lexically: v1.10.0 beats v1.9.9."""
+        self.assertEqual(
+            cvf.highest_readable(["v1.2.3", "v1.10.0", "v1.9.9"]), "v1.10.0"
+        )
+
+    def test_one_hand_made_tag_does_not_hide_the_real_releases(self):
+        """THE ROW. `max(tags, key=precedence)` raised on this list."""
+        self.assertEqual(
+            cvf.highest_readable(["v1.2.3", "release-candidate", "v1.10.0"]),
+            "v1.10.0",
+        )
+
+    def test_nothing_readable_says_so_instead_of_raising(self):
+        """A mirror with only hand-made tags still gets a sentence."""
+        self.assertEqual(cvf.highest_readable(["nightly", "wip"]), "none")
+
+    def test_no_tags_at_all_says_so(self):
+        """An empty mirror is a real state and the message has to render."""
+        self.assertEqual(cvf.highest_readable([]), "none")
+
+
 if __name__ == "__main__":
     unittest.main()

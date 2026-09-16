@@ -128,6 +128,57 @@ class RevokeSubjectTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_script(issue=7, claimed="../../etc/passwd")
 
+    # --- the recorded path must be validated like the body path is ---------
+    #
+    # The body path checks UUID_RE (that is what makes an editable source safe
+    # to read); the enrolment path did not. Two consequences, and the first is
+    # the one that matters: returning "" on a corrupt record would silently
+    # DOWNGRADE to the editable source — the weaker of the two paths, chosen by
+    # the failure of the stronger one. And this value is written to
+    # GITHUB_OUTPUT, where a newline ends the assignment and starts another.
+
+    def test_a_corrupt_record_refuses_instead_of_falling_back(self):
+        """THE ROW. A state problem is fixed, not routed around."""
+        path = self.licenses / "enrolments.json"
+        path.write_text(json.dumps({"7": {"subject": "not-a-uuid", "at": "x"}}))
+        self.own(MAC)
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_script(issue=7)
+
+        self.assertNotEqual(raised.exception.code, 0)
+
+    def test_a_record_carrying_a_newline_cannot_reach_github_output(self):
+        """Constraining the value closes this, not escaping it at use.
+
+        A uuid cannot contain a newline, so validating the value closes the
+        injection at its source rather than at every future point of use.
+        """
+        path = self.licenses / "enrolments.json"
+        path.write_text(json.dumps({"7": {"subject": f"{MAC}\nuuid=evil", "at": "x"}}))
+        self.own(MAC)
+
+        with self.assertRaises(SystemExit):
+            self.run_script(issue=7)
+
+        self.assertNotIn("evil", self.output.read_text())
+
+    def test_a_valid_recorded_subject_still_wins(self):
+        """The control: the check must not break the path it guards."""
+        self.enrol(MAC, issue=7)
+
+        self.run_script(issue=7)
+
+        self.assertEqual(self.resolved(), MAC)
+
+    def test_an_issue_with_no_record_still_falls_back_to_the_body(self):
+        """Absent is not corrupt, and the body path exists for exactly this."""
+        self.own(MAC)
+
+        self.run_script(issue=99)
+
+        self.assertEqual(self.resolved(), MAC)
+
 
 if __name__ == "__main__":
     unittest.main()

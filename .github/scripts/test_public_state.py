@@ -20,7 +20,9 @@ What is not pinned, because it is not true: that any of this un-publishes
 anything. The history of a public branch keeps every file it ever carried.
 """
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -322,16 +324,92 @@ class AuditTest(PublicStateTestCase):
         audit = load("audit_public_state")
         self.assertFalse(audit.cutover_configured(self.public))
 
-    def test_a_missing_roster_is_an_error_even_with_nothing_exposed(self):
+    def enrol_a_subject(self):
+        """One published key, which is what makes a roster something owed."""
+        (self.public / "a1b2c3d4-0000-4000-8000-000000000000.pub").write_text(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExamplePlaceholderKeyBytes00 x\n"
+        )
+
+    def test_a_missing_roster_is_an_error_once_a_subject_is_enrolled(self):
         """Removing contract data must not take the artefacts with it.
 
-        A branch with no roster stops every client within the roster's window,
-        which is a far larger failure than the one being cleaned up.
+        A branch with subjects and no roster stops every one of them within the
+        roster's window, which is a far larger failure than the one being
+        cleaned up.
         """
+        self.enrol_a_subject()
         self.write(self.private, "accounts.json", {"holder": {"id": HOLDER_ID}})
         self.use_private_store()
 
         self.assertNotEqual(self.audit(), 0)
+
+    def test_a_branch_before_its_first_signature_is_not_an_outage(self):
+        """THE ROW THAT MADE BOOTSTRAP IMPOSSIBLE.
+
+        This step runs BEFORE the candidate is staged and published, so exiting
+        non-zero over an absent roster killed the job before it could build the
+        first one. A fresh `licenses` branch — or one reset after an incident —
+        failed identically on every run, for ever, at the moment the scheme is
+        needed most.
+
+        A branch with no subjects has nothing to serve, so there is nothing an
+        absent roster is denying anyone. state.load already holds this rule one
+        file away ("a fresh state branch has none of them, and the schedule has
+        to succeed against that") and build_roster.py holds it for zero
+        subjects; this is that rule where it was missing.
+        """
+        self.assertEqual(self.audit(), 0)
+
+    def test_a_half_published_trio_is_an_error_with_no_subjects_at_all(self):
+        """Bootstrap tolerance covers absence, never a run that stopped midway.
+
+        Three files, one of them there: no reading of "this branch has not
+        published yet" explains that, and the client that fetched the one file
+        gets a roster it cannot authenticate.
+        """
+        (self.public / "roster.json").write_text("{}")
+
+        self.assertNotEqual(self.audit(), 0)
+
+    def test_require_artefacts_drops_the_bootstrap_tolerance(self):
+        """What the workflow runs AFTER publishing.
+
+        At that point absence can only mean a publishing run that produced
+        nothing, so the tolerance above must not follow it there — otherwise
+        the availability check would be unreachable in the one place it is
+        certain to be meaningful.
+        """
+        self.assertNotEqual(self.run_audit_argv(["--require-artefacts"]), 0)
+
+    def test_require_artefacts_passes_once_the_trio_is_published(self):
+        """So the post-publication gate is achievable, not permanently red."""
+        self.publish_roster_trio()
+
+        self.assertEqual(self.run_audit_argv(["--require-artefacts"]), 0)
+
+    def test_require_artefacts_does_not_repeat_the_disclosure_report(self):
+        """It runs in the same job as the full audit, minutes apart.
+
+        Reporting the same exposure paragraphs twice per run trains a
+        maintainer to skip both.
+        """
+        self.publish_roster_trio()
+        self.write(self.public, "accounts.json", {"holder": {"id": HOLDER_ID}})
+
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            code = self.run_audit_argv(["--require-artefacts"])
+
+        self.assertEqual(code, 0)
+        self.assertNotIn("accounts.json", captured.getvalue())
+
+    def run_audit_argv(self, arguments):
+        """Run the audit with an explicit argv, returning its exit code."""
+        saved = sys.argv
+        sys.argv = ["audit_public_state.py", *arguments]
+        try:
+            return self.audit()
+        finally:
+            sys.argv = saved
 
     def test_every_commercial_file_has_a_stated_reason(self):
         """A filename in a report tells a maintainer nothing about the stake.

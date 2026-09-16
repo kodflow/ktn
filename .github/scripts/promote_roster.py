@@ -108,6 +108,19 @@ def check_attested_in_this_run(candidate: pathlib.Path, roster: bytes, signature
 
     run = os.environ.get("GITHUB_RUN_ID", "")
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    # An empty run id is not an identity, and comparing two of them proves
+    # nothing: `"" == ""` passed, so the whole property this function asserts —
+    # that the signature was produced in THIS run — degenerated to "signed by a
+    # run with no identifier" wherever these variables are unset. That is
+    # outside Actions today, which is exactly where somebody would be holding
+    # the signing key by hand.
+    if not run or not attempt:
+        fail(
+            "GITHUB_RUN_ID/GITHUB_RUN_ATTEMPT are unset, so there is no run identity to "
+            "bind the signature to and 'signed in this run' cannot be checked. Refusing "
+            "to publish. This script publishes what a workflow signed; it is not a "
+            "manual tool."
+        )
     if attestation.get("run", "") != run or attestation.get("attempt", "") != attempt:
         fail(
             "the signing attestation names run "
@@ -200,8 +213,21 @@ def place(source: pathlib.Path, destination: pathlib.Path) -> None:
     racing this one — sees either the old file or the new one.
     """
     staged = destination.with_name(destination.name + ".incoming")
-    staged.write_bytes(source.read_bytes())
-    os.replace(staged, destination)
+    try:
+        staged.write_bytes(source.read_bytes())
+        os.replace(staged, destination)
+    except BaseException:
+        # A failed write used to leave `<name>.incoming` behind, and the NEXT
+        # run's "Commit the reconciliation" step stages the whole directory
+        # with `git add -A` — so a residue of a half-written publication could
+        # reach a PUBLIC branch. Cleaned up on the way out rather than left for
+        # a sweep that does not know what it is committing.
+        #
+        # BaseException, not Exception: a cancelled workflow arrives as
+        # KeyboardInterrupt, and a cancelled run is precisely when a partial
+        # write is most likely.
+        staged.unlink(missing_ok=True)
+        raise
 
 
 def main() -> None:

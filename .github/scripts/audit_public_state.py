@@ -23,6 +23,10 @@ Two modes, both non-destructive:
 Either way it checks the roster trio is present. Removing contract data must
 never be allowed to take the thing clients actually fetch with it.
 
+``--require-artefacts`` runs the trio check ALONE and without the bootstrap
+tolerance. The workflow calls it after publishing, where absence can only mean
+a publishing run that produced nothing.
+
 **On anonymising the account id: it does not work, and this is where to read
 why.** A GitHub numeric account id is a small integer — six to nine digits in
 practice — so any hash of one is recovered by hashing the whole range, which is
@@ -88,8 +92,37 @@ def cutover_configured(state_dir: pathlib.Path) -> bool:
 
 
 def missing_public_artefacts(state_dir: pathlib.Path) -> list:
-    """Any client-facing file that is absent, which is an outage."""
+    """Any client-facing file that is absent."""
     return [name for name in PUBLIC_ARTEFACTS if not (state_dir / name).is_file()]
+
+
+def publication_expected(state_dir: pathlib.Path) -> bool:
+    """Whether this branch holds anything a roster would be ABOUT.
+
+    A roster's subjects are the published ``*.pub`` files; a branch with none
+    has nothing to serve, so an absent roster there is not an outage. It is
+    precisely the state the FIRST signing run exists to replace.
+
+    This distinction is not a nicety. Without it the absence was counted as a
+    problem and the script exited 1 — from a step that runs BEFORE the
+    candidate is staged and published, so the job died before it could ever
+    build the first roster. A fresh ``licenses`` branch, or one reset after an
+    incident, could not be bootstrapped at all: every run failed identically,
+    at the moment the scheme is needed most.
+
+    ``state.load`` already holds the same principle one file away — "a fresh
+    state branch has none of them, and the schedule has to succeed against
+    that rather than crash on the first signature of a new deployment" — and
+    build_roster.py holds it too, for zero subjects. This is that rule, applied
+    where it was missing.
+
+    Note what this does NOT tolerate: a branch that HAS subjects and no roster
+    is an outage (people are entitled and nothing serves them), and a PARTIAL
+    trio is always broken however few subjects there are. Availability of the
+    trio after a publishing run is checked by ``--require-artefacts``, which
+    the workflow runs once the artefacts must certainly exist.
+    """
+    return any(state_dir.glob("*.pub"))
 
 
 def exposed(state_dir: pathlib.Path) -> list:
@@ -97,19 +130,50 @@ def exposed(state_dir: pathlib.Path) -> list:
     return [name for name in state.COMMERCIAL_FILES if (state_dir / name).is_file()]
 
 
-def main() -> None:
-    state_dir = state.licenses_dir()
-    problems = 0
+def judge_artefacts(state_dir: pathlib.Path, required: bool) -> int:
+    """Report on the roster trio, returning how many problems that is.
 
+    Reported first, and before any privacy finding: a branch with no roster is
+    an outage and must not be buried under a disclosure report.
+    """
     absent = missing_public_artefacts(state_dir)
-    if absent:
-        # Reported first: a branch with no roster is an outage, and it must not
-        # be buried under a privacy report.
+    if not absent:
+        return 0
+
+    partial = [name for name in PUBLIC_ARTEFACTS if name not in absent]
+    if required or partial or publication_expected(state_dir):
+        # `partial` is its own reason: a trio that is half there is a
+        # publishing run that stopped in the middle, and no amount of
+        # bootstrap tolerance covers it.
         print(
             f"::error::the public branch is missing {', '.join(absent)}. Every client fetches "
             "these unauthenticated; without them the parc stops within the roster's window."
         )
-        problems += 1
+        return 1
+
+    print(
+        f"::notice::the public branch has no roster yet ({', '.join(absent)} absent) and no "
+        "subjects to put in one. This is a branch before its first signature, not an outage — "
+        "this run is what leaves one behind. Refusing here is what made a fresh branch "
+        "impossible to bootstrap."
+    )
+    return 0
+
+
+def main() -> None:
+    state_dir = state.licenses_dir()
+    problems = 0
+
+    # --require-artefacts drops the bootstrap tolerance. The workflow runs it
+    # AFTER publishing, where the trio must exist: tolerating absence at that
+    # point would be tolerating a publishing run that produced nothing.
+    required = "--require-artefacts" in sys.argv
+    problems += judge_artefacts(state_dir, required)
+
+    if required:
+        # Availability only. The disclosure report below reads the same tree
+        # and would print the same paragraphs a second time in the same job.
+        sys.exit(1 if problems else 0)
 
     public = exposed(state_dir)
     if not public:

@@ -158,6 +158,62 @@ def enrolments() -> dict:
     return json.loads(path.read_text() or "{}")
 
 
+def moment(stamp: str):
+    """Parse an ISO-8601 instant, or return None when it cannot be read.
+
+    None rather than a default: a missing or unreadable timestamp means the
+    comparison below CANNOT be made, and every caller treats that as "do not
+    conclude" rather than as an ordering.
+    """
+    if not stamp:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def republished_after(records: dict, decision: dict, subject: str) -> str:
+    """The issue that re-published this subject AFTER this revocation, if any.
+
+    A revocation is replayed on the strength of its event id alone: the id is
+    not in the ledger, so the decision was never reconciled. That is the right
+    identity for "has this been processed", and it says nothing about whether
+    the answer is still current.
+
+    The gap it leaves: the ledger is committed and pushed by the same step, so
+    a failed push loses the record of a withdrawal that DID happen. If the
+    device re-enrols in the meantime — a new issue, a new approval, the same
+    uuid — the next run reads the old revocation as outstanding and withdraws a
+    key a maintainer has since republished. Nothing reports it, because from
+    the ledger's point of view the revocation simply took effect.
+
+    So the enrolment records are consulted for a LATER publication of the same
+    subject. Both sides carry an ISO-8601 instant: the decision's is the label
+    event's `created_at`, the record's is the `at` record_owner.py stamps at
+    approval. When either is unreadable this returns "" — the caller then
+    behaves as before, because refusing to replay on the strength of a
+    timestamp it could not read would be the opposite failure.
+
+    Note what is NOT decided here. Whether a revoked machine may re-enrol at
+    all is a policy question, and the answer might well be no. What this
+    refuses to do is settle it by replaying a stale decision over a fresh one
+    while reporting nothing.
+    """
+    taken = moment(decision.get("at", ""))
+    if taken is None:
+        return ""
+    for issue, record in records.items():
+        if str(issue) == str(decision["issue"]):
+            continue
+        if record.get("subject") != subject:
+            continue
+        published = moment(record.get("at", ""))
+        if published is not None and published > taken:
+            return str(issue)
+    return ""
+
+
 def withdraw(subject: str) -> bool:
     """Remove a subject's key, the way the revoke job does.
 
@@ -203,6 +259,17 @@ def judge(decision: dict, records: dict) -> tuple:
             "device it published, so the revocation cannot be applied from durable "
             "state. Confirm by hand that the device's key is gone from the branch.",
         )
+    later = republished_after(records, decision, subject)
+    if later:
+        return (
+            "superseded",
+            f"issue #{decision['issue']} revoked {subject}, and issue #{later} published "
+            f"the same subject AFTERWARDS. Not withdrawing it: replaying this revocation "
+            "would undo a newer decision, and the ledger entry for the first withdrawal "
+            "was most likely lost to a failed push rather than never taken. Decide whether "
+            "the revocation still stands and, if it does, re-apply `license:revoked` to the "
+            "newer issue.",
+        )
     if withdraw(subject):
         return "applied", f"withdrew {subject} for issue #{decision['issue']} (revocation had not landed)"
     return "effective", f"issue #{decision['issue']}: {subject} was already withdrawn"
@@ -241,7 +308,7 @@ def main() -> None:
         entries.append({**decision, "outcome": outcome, "reconciled_at": now, "run": run})
         if outcome == "applied":
             applied.append(note)
-        elif outcome in ("unpublished", "unresolved"):
+        elif outcome in ("unpublished", "unresolved", "superseded"):
             attention.append(note)
         if note:
             print(f"{outcome}: {note}")
