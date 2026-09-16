@@ -675,20 +675,30 @@ class TermOrderingTest(ChainTestCase):
 
         self.assertEqual(got, "2027-01-01T00:00:00Z")
 
-    def test_an_unorderable_pair_keeps_what_was_recorded(self):
-        """A value that is not an instant cannot be compared to one, so the
-        recorded term stands and the run says so. Replacing it with the
-        candidate could only move a term outwards."""
+    def test_an_unorderable_pair_keeps_the_readable_term(self):
+        """A value that is not an instant cannot be ordered against one, so the
+        READABLE term wins whichever side it arrives on.
+
+        This row is named for what it measures now. It used to say "keeps what
+        was recorded", and that was wrong twice over: the rule is parseability
+        rather than provenance, and which value is even "recorded" here is
+        decided by `sorted(legacy.items())` — `newer` sorts before `older`, so
+        the corrupt value is recorded first and the valid one arrives as the
+        candidate. The row therefore exercises corrupt-recorded-with-valid-
+        candidate, and says so.
+        `test_a_corrupt_candidate_does_not_replace_a_valid_recorded_term`
+        covers the opposite direction with logins chosen so the ordering is
+        explicit.
+        """
         got = self.terms_after_migration("2027-01-01T00:00:00Z", "soon")
 
-        #: The RECORDED value, exactly. `assertIn(got, (recorded, candidate))`
-        #: stood here and accepted both, so it passed even if the migration
-        #: replaced the recorded term with the unorderable candidate — which
-        #: is the one outcome this row exists to forbid.
+        #: One value, exactly. `assertIn(got, (recorded, candidate))` stood
+        #: here and accepted both, so it passed against a migration that kept
+        #: either — which is the whole question.
         self.assertEqual(
             got,
             "2027-01-01T00:00:00Z",
-            "the unorderable candidate replaced the recorded term; a term must never move outwards by accident",
+            "the unreadable value won; a term that cannot be read is no bound at all",
         )
 
 
