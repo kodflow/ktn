@@ -27,9 +27,14 @@ import re
 import sys
 
 
+# state.py owns where licence state lives and how it is keyed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
+
+
 def licenses_dir() -> pathlib.Path:
-    """Where licence state lives; see build_roster.py for the same helper."""
-    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+    """Where licence state lives; see state.licenses_dir."""
+    return state.licenses_dir()
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
@@ -64,33 +69,63 @@ def recorded_subject(issue: str) -> str:
     return json.loads(path.read_text() or "{}").get(issue, {}).get("subject", "")
 
 
-def claimed_subject(body: str, author: str) -> str:
+def claimed_subject(body: str, author: str, author_id: str) -> str:
     """Read the uuid from the body, and refuse one the author does not own.
 
     For an issue with no enrolment record this is the only source there is. The
-    ownership cross-check is what makes it safe to use: owners.json is written
-    by the approval chain, keeps its bindings through revocation, and is not
+    ownership cross-check is what makes it safe to use: the binding is written
+    by the approval chain, keeps its record through revocation, and is not
     editable from an issue.
+
+    Compared by NUMERIC account id whenever the binding carries one. A login
+    comparison is what a released handle defeats: whoever registers it next
+    passes the check for every device the previous holder still has published,
+    and revoking someone else's working licence needs no escalation to hurt.
+    A binding with no id behind it — enrolled before ids were captured — still
+    falls back to the login, and says so: refusing outright would leave that
+    customer unable to withdraw a compromised key, which is the moment it
+    matters most.
     """
     uuid = section(body, "Subject")
     if not UUID_RE.match(uuid):
         fail(f"subject {uuid!r} is not a canonical v4 uuid")
 
-    path = licenses_dir() / "owners.json"
-    owners = json.loads(path.read_text() or "{}") if path.exists() else {}
-    owner = owners.get(uuid)
-    if owner is None:
+    owner_key = state.device_owner(licenses_dir(), uuid)
+    if not owner_key:
         fail(
             f"{uuid} has no owner on record: nothing was ever published for it, so this "
             "issue's body does not name a device this repository can revoke."
         )
     if not author:
         fail("issue has no author; cannot confirm the body names that account's device")
-    if owner != author:
+
+    if state.is_resolved(owner_key):
+        if not author_id.isdigit():
+            fail(
+                f"{uuid} is bound to account {owner_key}, but this run passed no numeric id "
+                f"for @{author} ({author_id!r}). The workflow passes "
+                "github.event.issue.user.id; without it the binding cannot be checked "
+                "against the account that opened this issue."
+            )
+        if owner_key != author_id:
+            fail(
+                f"this issue was opened by @{author} (account {author_id}) but {uuid} belongs "
+                f"to account {owner_key}. Refusing to revoke another account's device from an "
+                "editable body."
+            )
+        return uuid
+
+    legacy_login = state.key_login(owner_key)
+    if legacy_login != author:
         fail(
-            f"this issue was opened by @{author} but {uuid} belongs to @{owner}. "
+            f"this issue was opened by @{author} but {uuid} belongs to @{legacy_login}. "
             "Refusing to revoke another account's device from an editable body."
         )
+    print(
+        f"::warning::{uuid} has no numeric account id behind it, so ownership was confirmed "
+        f"by LOGIN. A released login can be registered by somebody else; resolve this "
+        f"account with `migrate_state_keys.py --resolve {author}=<numeric-id>` to close that."
+    )
     return uuid
 
 
@@ -99,7 +134,11 @@ def main() -> None:
     uuid = recorded_subject(issue)
     source = "enrolments.json"
     if not uuid:
-        uuid = claimed_subject(os.environ.get("BODY", ""), os.environ.get("AUTHOR", ""))
+        uuid = claimed_subject(
+            os.environ.get("BODY", ""),
+            os.environ.get("AUTHOR", ""),
+            os.environ.get("AUTHOR_ID", ""),
+        )
         source = "the issue body, cross-checked against owners.json"
 
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

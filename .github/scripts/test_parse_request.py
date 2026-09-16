@@ -328,13 +328,45 @@ class ParseRequestTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_script(MAC, "kodflow", author_id="kodflow")
 
-    def test_a_licence_that_predates_accounts_json_is_still_served(self):
-        """Those accounts have no recorded id and must not be locked out.
+    def test_a_licence_that_predates_accounts_json_is_not_attributed(self):
+        """The residual the id guard could not close, now closed by refusing.
 
-        They also cannot be checked, which is the residual this guard does not
-        close: it only binds once an id is on record.
+        This test used to assert the OPPOSITE — that such a request is served —
+        and that was the hole. An account with no recorded id has nothing for
+        the write-once guard to compare, so whoever registers its released
+        login arrives looking brand new: no devices against the quota and no
+        term on record, which is the one path that starts a fresh year. The
+        previous customer's seats and their remaining year, handed over
+        silently.
+
+        A rename of the original customer has exactly the same shape here. The
+        fact that separates them is in a billing record, so this stops and says
+        so instead of picking one.
         """
         self.enrol(MAC, "kodflow", account_id="")
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_script(WIN, "kodflow")
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNotIn(f"uuid={WIN}", self.output.read_text())
+
+    def test_resolving_the_account_by_hand_lets_the_request_through(self):
+        """The refusal has to be a question, not a dead end.
+
+        Recording the id is the whole resolution, and it is what
+        `migrate_state_keys.py --resolve` writes. Without this the previous
+        test would be satisfied by a permanent lockout.
+        """
+        self.enrol(MAC, "kodflow", account_id="")
+        # What --resolve does: the numeric id of the account that bought it.
+        (self.licenses / "accounts.json").write_text(
+            json.dumps({"kodflow": {"id": IDS["kodflow"]}})
+        )
+        # And what the migration then does with the binding it could not key.
+        (self.licenses / "device-owners.json").write_text(
+            json.dumps({MAC: IDS["kodflow"]})
+        )
 
         self.run_script(WIN, "kodflow")
 

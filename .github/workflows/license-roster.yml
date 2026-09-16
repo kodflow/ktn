@@ -184,14 +184,22 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           # The full current label set, not just the one that triggered this
           # run: an expireAt: label only counts if it landed before (or with)
-          # license:approved.
+          # license:approved. record_owner.py reads the same set for a
+          # ciOwner: label, which is how a maintainer says who a CI seat is
+          # for when that is not the requester.
           LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
+          # What the request ASKED for as its CI owner, already shape-checked.
+          # A claim, never a grant: AUTHOR_ID above is the requester, and for
+          # an organisation customer the two are different accounts. Recording
+          # them separately is what stops a CI entitlement being published
+          # against an id no runner will ever present.
+          CI_OWNER: ${{ steps.request.outputs.ci_owner }}
           LICENSES_DIR: state
         run: |
           set -euo pipefail
           mkdir -p state
           mv /tmp/subject.pub "state/${UUID}.pub"
-          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}" "${ISSUE}"
+          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}" "${ISSUE}" "${CI_OWNER}"
           python3 .github/scripts/record_expiry.py "${UUID}"
 
       - name: Commit
@@ -238,6 +246,12 @@ jobs:
           # revoke a device the same account already owns.
           ISSUE: ${{ github.event.issue.number }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          # Ownership is confirmed by NUMERIC account id when the binding
+          # carries one. A login comparison is what a released handle defeats:
+          # whoever registers it next passes the check for every device the
+          # previous holder still has published, and revoking someone else's
+          # working licence needs no escalation to hurt.
+          AUTHOR_ID: ${{ github.event.issue.user.id }}
           BODY: ${{ github.event.issue.body }}
           LICENSES_DIR: state
         run: python3 .github/scripts/revoke_subject.py
@@ -329,6 +343,34 @@ jobs:
           # checkout the signature would cover the previous roster.
           ref: licenses
           path: state
+
+      # Reported, never enforced. Licence state is keyed by numeric account id
+      # now; a branch still carrying login-keyed files is READ through the
+      # fallback in state.py, so an un-migrated state cannot stop a signature —
+      # an unsigned roster blocks every client within 24 hours, which is far
+      # worse than a stale key scheme. `|| true` is therefore deliberate: this
+      # step exists to make the remaining work visible on every run, and an
+      # account nobody has resolved yet must not take the parc offline.
+      - name: Report whether any state is still keyed by login
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/migrate_state_keys.py --check || true
+
+      # This repository is PUBLIC and this branch is where licence state
+      # lives, so anything written here is published. The signed roster has to
+      # be — every client fetches it unauthenticated — but which accounts are
+      # customers, when each term ends and who negotiated extra seats do not.
+      #
+      # Not a gate while PRIVATE_STATE_DIR is unset: that is the state of the
+      # world today, and failing every signature over it would stop the parc
+      # to protest a condition the run cannot fix. It BECOMES a gate the moment
+      # a private store is configured, because a half-finished cutover reads as
+      # a finished one from the configuration alone. Hence no `|| true`.
+      - name: Report what the public branch discloses
+        env:
+          LICENSES_DIR: state
+          PRIVATE_STATE_DIR: ${{ vars.PRIVATE_STATE_DIR }}
+        run: python3 .github/scripts/audit_public_state.py
 
       # Checked BEFORE rebuilding: this reads the roster about to be replaced,
       # which is the only moment its remaining life is still observable.

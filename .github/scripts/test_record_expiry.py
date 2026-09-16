@@ -23,6 +23,9 @@ SCRIPT = pathlib.Path(__file__).with_name("record_expiry.py")
 MAC = "eb56f295-9428-49b1-9dc3-0ebc6e383444"
 WIN = "11111111-2222-4333-8444-555555555555"
 BOX = "22222222-3333-4444-8555-666666666666"
+# State is keyed by NUMERIC account id; the login is a label. Distinct numbers
+# per account so a test cannot pass by confusing the two.
+ACCOUNT_IDS = {"kodflow": "133899878", "someone-else": "424242"}
 
 
 def load_script():
@@ -51,11 +54,24 @@ class TermTestCase(unittest.TestCase):
         self.module = load_script()
 
     def bind(self, uuid, account="kodflow", published=True, term=None):
-        """Record a device the way record_owner.py does, optionally published."""
-        path = self.licenses / "owners.json"
+        """Record a device the way record_owner.py does, optionally published.
+
+        Bound to the account's NUMERIC id, and the login→id directory is
+        written alongside it: that is the post-migration shape, and it is what
+        the approval chain produces now. The login-keyed predecessor is
+        exercised separately, where the legacy fallback is what is under test.
+        """
+        account_id = ACCOUNT_IDS[account]
+        path = self.licenses / "device-owners.json"
         owners = json.loads(path.read_text()) if path.exists() else {}
-        owners[uuid] = account
+        owners[uuid] = account_id
         path.write_text(json.dumps(owners))
+
+        path = self.licenses / "accounts.json"
+        accounts = json.loads(path.read_text()) if path.exists() else {}
+        accounts[account] = {"id": account_id}
+        path.write_text(json.dumps(accounts))
+
         if published:
             (self.licenses / f"{uuid}.pub").write_text("ssh-ed25519 AAAA test\n")
         if term:
@@ -66,7 +82,7 @@ class TermTestCase(unittest.TestCase):
     def revoke(self, uuid):
         """Remove a device the way the revoke job does: key and sidecar go.
 
-        owners.json is deliberately left alone — that is the anti-squat rule.
+        The binding is deliberately left alone — that is the anti-squat rule.
         """
         (self.licenses / f"{uuid}.pub").unlink(missing_ok=True)
         (self.licenses / f"{uuid}.meta.json").unlink(missing_ok=True)
@@ -87,11 +103,16 @@ class TermTestCase(unittest.TestCase):
         return json.loads(path.read_text())["expiresAt"] if path.exists() else None
 
     def licence_of(self, account="kodflow"):
-        """The term recorded for the account itself, or None."""
-        path = self.licenses / "licences.json"
+        """The term recorded for the account itself, or None.
+
+        Read from the id-keyed file: the term belongs to an account, and an
+        account is a number. Keyed by login it followed a released handle to
+        whoever registered it next, along with the year still left on it.
+        """
+        path = self.licenses / "account-terms.json"
         if not path.exists():
             return None
-        return json.loads(path.read_text()).get(account, {}).get("expiresAt")
+        return json.loads(path.read_text()).get(ACCOUNT_IDS[account], {}).get("expiresAt")
 
 
 class FirstPublishTest(TermTestCase):
@@ -306,15 +327,31 @@ class MalformedStateTest(TermTestCase):
         """A recorded null/0/"" must stop the run, never read as "no term".
 
         Reading it as absence sends the account down the brand-new-licence
-        path and hands it a fresh year — the free-renewal outcome licences.json
-        exists to prevent, reachable by nothing more than a bad edit.
+        path and hands it a fresh year — the free-renewal outcome the term
+        record exists to prevent, reachable by nothing more than a bad edit.
+
+        Written to the LEGACY login-keyed file deliberately: that path is still
+        read during the migration, so the refusal has to hold through it too. A
+        recorded `null` reaching the caller as `None` would be identical to
+        "nothing recorded" — which is why absence is a distinct sentinel.
         """
         for falsey in (None, 0, "", False):
-            with self.subTest(recorded=falsey):
+            with self.subTest(recorded=falsey, keyed="login"):
                 self.setUp()
                 self.bind(MAC)
                 (self.licenses / "licences.json").write_text(
                     json.dumps({"kodflow": {"expiresAt": falsey}}) + "\n"
+                )
+
+                with self.assertRaises(SystemExit):
+                    self.run_script(MAC)
+
+        for falsey in (None, 0, "", False):
+            with self.subTest(recorded=falsey, keyed="id"):
+                self.setUp()
+                self.bind(MAC)
+                (self.licenses / "account-terms.json").write_text(
+                    json.dumps({ACCOUNT_IDS["kodflow"]: {"expiresAt": falsey}}) + "\n"
                 )
 
                 with self.assertRaises(SystemExit):

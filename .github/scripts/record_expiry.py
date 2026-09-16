@@ -35,18 +35,14 @@ import pathlib
 import re
 import sys
 
+# state.py owns where licence state lives and how it is keyed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
+
 
 def licenses_dir() -> pathlib.Path:
-    """Where licence state lives.
-
-    Defaults to ``licenses/`` so the scripts stay runnable from a plain
-    checkout of ``main``. The workflow overrides it with ``LICENSES_DIR``
-    because the state now lives on its own branch, checked out into a
-    separate directory: ``main`` carries a required-status ruleset that
-    refuses a direct push, which silently stopped every re-signature for a
-    day and a half until the roster's window closed.
-    """
-    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+    """Where licence state lives; see state.licenses_dir."""
+    return state.licenses_dir()
 
 
 LABEL_RE = re.compile(r"^expireAt:(\d{4}-\d{2}-\d{2})$")
@@ -85,27 +81,14 @@ def render(moment: datetime.datetime) -> str:
     return moment.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def owners() -> dict:
-    """The device → account bindings recorded so far."""
-    path = licenses_dir() / "owners.json"
-    # No file means nothing is bound yet, which is the first-ever publish.
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text() or "{}")
-
-
-def active_devices(account: str) -> list:
+def active_devices(account_key: str) -> list:
     """Every device of an account whose key is currently published.
 
     A revoked device keeps its owner binding — deliberately, so the identity
     cannot be squatted afterwards — but it is no longer part of the licence and
     must not be restamped on renewal.
     """
-    return sorted(
-        uuid
-        for uuid, owner in owners().items()
-        if owner == account and (licenses_dir() / f"{uuid}.pub").is_file()
-    )
+    return sorted(state.active_devices(licenses_dir(), account_key))
 
 
 def adopt_existing_term(account: str) -> str:
@@ -134,31 +117,30 @@ def adopt_existing_term(account: str) -> str:
     return render(min(terms)) if terms else ""
 
 
-def licence_term(account: str) -> str:
-    """The account's term, or "" when it has never had one."""
-    path = licenses_dir() / "licences.json"
-    if path.exists():
-        entry = json.loads(path.read_text() or "{}").get(account, {})
-        # `in`, not truthiness. A recorded null, 0, false or "" is a corrupt
-        # entry, and treating it as absent would send this account down the
-        # brand-new-licence path and hand it a fresh year — the free-renewal
-        # outcome the whole file exists to prevent, reachable by nothing more
-        # than a bad edit.
-        if "expiresAt" in entry:
-            # Validate on the way out: a hand-edited file must fail here rather
-            # than reach the roster.
-            return render(parse_term(entry["expiresAt"], str(path)))
+def licence_term(account_key: str) -> str:
+    """The account's term, or "" when it has never had one.
+
+    Read by NUMERIC account id — state.account_term still falls back to the
+    login-keyed licences.json, across every login that id has carried, so a
+    rename neither loses the term nor looks like a brand-new licence. That
+    fallback is load-bearing: "no term on record" is the one path that starts a
+    fresh year, so a lookup that misses is a free renewal.
+    """
+    recorded = state.account_term(licenses_dir(), account_key)
+    if recorded is not state.ABSENT:
+        # Validate on the way out: a hand-edited file must fail here rather
+        # than reach the roster. `None` is the ONLY absent answer, so a
+        # recorded null/0/false/"" arrives here as itself and is refused
+        # instead of reading as absent and granting a fresh year.
+        return render(parse_term(recorded, f"the recorded term for account {account_key}"))
     # Nothing at the account level: either a brand-new licence, or one that
     # predates this file.
-    return adopt_existing_term(account)
+    return adopt_existing_term(account_key)
 
 
-def set_licence_term(account: str, iso: str) -> None:
-    """Record the account's term. This file outlives every device it has."""
-    path = licenses_dir() / "licences.json"
-    licences = json.loads(path.read_text() or "{}") if path.exists() else {}
-    licences.setdefault(account, {})["expiresAt"] = iso
-    path.write_text(json.dumps(licences, indent=2, sort_keys=True) + "\n")
+def set_licence_term(account_key: str, iso: str) -> None:
+    """Record the account's term. This outlives every device it has."""
+    state.set_account_term(licenses_dir(), account_key, iso)
 
 
 def stamp(uuid: str, iso: str) -> None:
@@ -196,7 +178,7 @@ def main() -> None:
     uuid = sys.argv[1]
     labels = [label["name"] for label in json.loads(os.environ.get("LABELS_JSON", "[]"))]
 
-    account = owners().get(uuid)
+    account = state.device_owner(licenses_dir(), uuid)
     # record_owner.py runs immediately before this script, so an unbound
     # subject here means the workflow changed and the binding is gone. Guessing
     # an account would stamp a term onto the wrong licence.

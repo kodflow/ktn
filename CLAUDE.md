@@ -14,23 +14,80 @@ roster's 24-hour window closed behind it, and every licensed binary stopped.
 Data written by a machine every twenty minutes does not belong under a rule
 written for code.
 
-Files on that branch: `<uuid>.pub` (published devices), `owners.json`
-(device → account), `accounts.json` (account → numeric id), `licences.json`
-(account → term), `<uuid>.meta.json` (per-device copy of the term),
-`quotas.json` (optional per-account seat override), `required-version.txt`,
+Files on that branch: `<uuid>.pub` (published devices), `device-owners.json`
+(device → numeric account id), `accounts.json` (login → numeric id),
+`account-terms.json` (account → term), `<uuid>.meta.json` (per-device copy of
+the term), `account-quotas.json` (optional per-account seat override),
+`ci-owners.json` (requester → CI beneficiary), `required-version.txt`,
 `enrolments.json` (issue → the device it published), `decisions.jsonl` (the
 append-only ledger of label decisions and what became of each), and the signed
 `roster.json` / `roster.signed.json`.
 
-All of it is PUBLIC, and some of it is contract data: `owners.json` names which
-GitHub accounts are customers, `licences.json` gives each one's end date, and
-`quotas.json` says who negotiated extra seats. The signed roster has to be
-public — every client fetches it unauthenticated — but the login↔account
-mapping does not, and hashing a numeric GitHub id would not hide it: those ids
-are small enumerable integers. Moving the customer-facing files to a private
-store the signer reads with a token is the only fix; nothing here does that
-yet. `enrolments.json` and `decisions.jsonl` were deliberately written to carry
-no login and no actor, since the issues they reference are already public.
+The three login-keyed predecessors — `owners.json`, `licences.json`,
+`quotas.json` — are still READ, and are the subject of "Keyed by id" below.
+
+## What is public, and what should not be
+
+All of that branch is PUBLIC, and some of it is contract data. The signed
+roster has to be public — every client fetches it unauthenticated, and a scheme
+whose roster needed a credential would need a credential to check a credential.
+Which accounts are customers, when each term ends and who negotiated extra
+seats do not. `enrolments.json` and `decisions.jsonl` were deliberately written
+to carry no login and no actor, since the issues they reference are already
+public.
+
+`state.COMMERCIAL_FILES` is the boundary, enumerated in one place rather than
+remembered, and `audit_public_state.py` reports it on every signature. Each
+entry carries the reason it matters, so the report names the stake rather than
+a filename.
+
+**Three steps, two of them delivered here.**
+
+1. **Re-key and prune.** `migrate_state_keys.py --prune` deletes
+   `owners.json`, `licences.json` and `quotas.json` once their contents are
+   provably migrated. Their id-keyed replacements carry no login at all —
+   `device-owners.json` maps a uuid to a number — so this removes every
+   "which named account owns which device" and "which named account expires
+   when" link from a public branch. It refuses while anything is unmigrated,
+   because those files are then the only copy, and a term deleted rather than
+   migrated reads afterwards as an account with no term: a free year.
+2. **The seam.** `PRIVATE_STATE_DIR` moves every commercial file somewhere the
+   public branch is not. `state.private_for()` is the only place that knows,
+   and unset it resolves to the public directory — so nothing changes until a
+   maintainer configures it. With it set, `audit_public_state.py` FAILS while
+   any commercial file is still public: a half-finished cutover otherwise
+   reads as a finished one from the configuration alone. Pointing it at the
+   public directory counts as unset, since that configures nothing.
+3. **The private store itself — NOT decided here.** The signer runs on a
+   GitHub runner and would read the private half with a token. Choosing where
+   (another repository, an object store, an environment secret) and
+   provisioning it is an infrastructure decision, and no script here invents
+   one. What the seam buys is that the choice is two lines of workflow
+   configuration and no code change.
+
+**Anonymising the account id does not work.** A GitHub numeric id is a small
+integer, six to nine digits, so any hash of one falls to hashing the whole
+range. A salt does not help while the salt ships in the client — the client is
+what checks the roster, so whatever it needs is public by construction. A
+random 128-bit handle minted per account WOULD be opaque, and it works for
+anything the client does not have to match locally.
+
+It does not work for the `ci` block. A CI run proves itself with an OIDC token
+carrying `repository_owner_id`, a number, and the client compares that number
+against the roster; there is no opaque value it could compare without being
+given the mapping, which would publish the mapping. So **the `ci` block
+irreducibly discloses the numeric ids of CI-entitled accounts** for as long as
+the check is local against a public document. Moving that check behind an
+authenticated endpoint is a product decision, not a naming problem. The full
+argument is in `audit_public_state.py`'s module docstring, next to the code it
+constrains.
+
+**And none of this un-publishes anything.** Every commit that carried one of
+these files is still in the history of a public branch, and every clone and
+every cached fetch already taken still has it. Pruning reduces FUTURE exposure
+only. What has been on that branch should be treated as disclosed and handled
+as such — notification, and rotation of anything rotatable — not as something
+a delete commit fixes.
 
 ## The model
 
@@ -43,7 +100,7 @@ a subject like any other.
 
 ## Rules that exist because their absence was a way to get paid service free
 
-**Seats are counted from published `.pub` files, never from `owners.json`.**
+**Seats are counted from published `.pub` files, never from the bindings.**
 Revocation deliberately leaves the uuid bound to its original owner so the
 identity cannot be squatted afterwards. Counting bindings would therefore
 retire a seat permanently on every revocation — three revocations and the
@@ -57,7 +114,7 @@ each handed out a fresh year before this was closed:
 - a second device started its own year, so one licence expired on as many dates
   as it had machines, and a late device outlived the licence authorising it;
 - deriving the term from surviving devices let an account revoke its last
-  device and enrol another to restart the clock — `licences.json` survives
+  device and enrol another to restart the clock — the recorded term survives
   revocation precisely so that cannot happen;
 - a recorded `expiresAt` that was `null`, `0`, `false` or `""` read as *absent*
   rather than as *corrupt*, sending the account down the brand-new-licence
@@ -79,8 +136,44 @@ cutting an account to a single device. Exclude `bool` explicitly.
 The roster's `ci` block maps a **numeric account id** to a term. Keyed by id and
 never by login: a login can be renamed, and a released one can be claimed by
 somebody else, so matching on the name would turn a freed handle into a way in.
-GitHub does not reissue an id. `record_owner.py` captures it at approval time
-from `github.event.issue.user.id`.
+GitHub does not reissue an id. `record_owner.py` captures the requester's id at
+approval time from `github.event.issue.user.id`.
+
+**The requester is not necessarily the beneficiary, and the two are now
+separate fields.** A CI run presents `repository_owner_id` — the owner of the
+repository it runs in — while an issue is opened by a PERSON. For a customer
+whose repositories belong to an organisation those are two different numbers,
+so publishing the requester's id produced an entitlement no run would ever
+carry: the licence looked issued, the CI job failed its licence check, and
+nothing named the cause. A silent no is worse than a refusal, because nobody
+knows to ask about it.
+
+`ci-owners.json` holds the answer, keyed by the requester's numeric id — so it
+needs no migration when the rest of the state is re-keyed, and carries no
+recycled-handle exposure of its own. Three states, and the middle one is the
+point:
+
+- **no entry** — the beneficiary IS the requester. The default, and right for a
+  personal account;
+- **`claimed` with no `beneficiary`** — UNRESOLVED. The request named someone
+  else and nothing here can verify the requester speaks for them, so
+  `build_roster.py` omits the CI entry and says so on every build. The devices
+  are unaffected;
+- **`beneficiary`** — a maintainer answered, with a `ciOwner:<numeric-id>` or
+  `ciOwner:self` label on an approval. That id is the published key.
+
+The policy is deliberately NOT chosen here. Whether an organisation's CI seat
+belongs to the organisation or to the member who bought the licence is a billing
+question; both answers are expressible and neither is inferred. The request form
+may NAME a CI owner, and that name is a claim, never a grant — `ci_owner:
+some-big-org` from an issue body would otherwise cover every repository that org
+owns. A claim never moves a beneficiary a maintainer already decided.
+
+Two licences may legitimately name one beneficiary (two members of one org). The
+owner is covered while either is live, so the later term is published and the
+collision is reported — it is also what a licence sold twice looks like. An
+ABSENT term sorts last in that comparison: the client reads a missing `exp` as
+no expiry, so it is the widest entry, not an empty string that loses to a date.
 
 An account appears only while it has an active device, so revoking the last one
 removes CI with it — there is no separate revocation path to forget. The term is
@@ -96,14 +189,70 @@ quota and CI seat to whoever picked up the freed handle. `parse_request.py`
 refuses such a request at the gate; deciding whether it is a rename or a
 recycled handle is a billing question, not one for an approval run.
 
-What remains open: an account enrolled before `accounts.json` existed has no id
-to compare, so the guard cannot bind for it. Re-keying `owners.json`,
-`licences.json` and `quotas.json` by id is the real repair and is a live-state
-migration.
+## Keyed by id — the state, not just the CI block
 
-Licences approved before `accounts.json` existed carry no id. They keep working
-as devices and get no CI seat until their next approval records one; inventing
-an id, or falling back to the login, would defeat the reason the id is used.
+`device-owners.json`, `account-terms.json` and `account-quotas.json` replace
+`owners.json`, `licences.json` and `quotas.json`, keyed by **numeric account
+id**. The login survives as a label, and `accounts.json` is the only file where
+it is still a key — it IS the login→id directory, and a directory has to be
+keyed on the thing being looked up.
+
+`state.py` is the single place that knows this. Every lookup reads the id-keyed
+file and falls back to the login-keyed one through `accounts.json`, across
+**every** login an id has carried: a rename records the new login against the
+same id and the old entry is kept, so a legacy term or quota is still reachable
+afterwards. Without that traversal a rename looked like an account with no term
+on record — the one path that starts a clock — and handed out a fresh year.
+Renaming once a year was an indefinite subscription, and renaming between
+requests was unlimited devices.
+
+**The legacy read path is load-bearing, not vestigial.** An un-migrated branch
+must still produce a signable roster: a roster that is not re-signed blocks
+every client within 24 hours, which is far worse than a stale key scheme.
+
+`migrate_state_keys.py` converts live state. It never deletes the legacy files,
+merges rather than replaces, and is idempotent — a second run produces no diff,
+and a device approved between two runs is not dropped by the later one. The
+signing job calls it with `--check` every 20 minutes, reporting and never
+blocking (`|| true` is deliberate).
+
+**Absence is a sentinel, not `None`.** `state.ABSENT` exists because a recorded
+`null` is exactly the corruption this chain refuses, and if absence were also
+`None` the two would be one answer: the account reads as brand new and gets a
+fresh year. The migration copies a corrupt term across VERBATIM for the same
+reason — dropping it is the tidier-looking option and the dangerous one, since
+once the legacy file is gone the account would read as having no term at all.
+
+**An account with no recorded id is marked, never attributed.** Its key is the
+explicit marker `login:<login>`, which `isdigit()` rejects everywhere, so no
+code path expecting an id can accept one. It keeps its devices and its term, it
+gets no CI seat, and it is listed in `unresolved-accounts.json`.
+
+Its next approval is **refused**. This reverses what this file used to say, and
+the old behaviour was the hole: with no id on record the write-once guard has
+nothing to compare and passes, so whoever registers the released login arrives
+looking brand new — no devices against the quota, no term on record — and
+collects the previous customer's seats and their remaining year with no error
+anywhere. An ordinary rename has the identical shape here; the fact that
+separates them is in a billing record. So the run stops and prints the command
+that resolves it:
+
+```
+migrate_state_keys.py --resolve <login>=<numeric-id>
+```
+
+That records the id and promotes every entry already written under the marker.
+Resolution is write-once: a login already carrying a different id is a
+conflict, because GitHub does not reissue one.
+
+A refusal costs one approval and names its cause. Its published devices keep
+being signed into every roster meanwhile — this refuses an approval, not a
+licence.
+
+**Re-keying changed nothing a client sees.** The roster built from migrated
+state is byte-identical to the one built from the same state before migration:
+subjects are keyed by uuid and the `ci` block was already keyed by id. No client
+migration, no format version bump.
 
 `setup/action.yml` therefore needs **no key material**. `license-key` is kept,
 deprecated and warning, because nothing outside GitHub Actions can mint a token
@@ -147,8 +296,8 @@ refused.
 ## Workflow ordering that other code depends on
 
 `license-roster.yml` publishes the key, then runs `record_owner.py`, then
-`record_expiry.py`. The last reads `owners.json` to find the account whose term
-to apply, so that order is load-bearing.
+`record_expiry.py`. The last reads the binding the first wrote to find the
+account whose term to apply, so that order is load-bearing.
 
 **Nothing is published until it was signed AND verified in the same run.** The
 signing job builds into a scratch `CANDIDATE_DIR`; the step that runs `openssl

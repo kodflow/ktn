@@ -60,3 +60,20 @@ body:
       placeholder: mac
     validations:
       required: false
+
+  - type: input
+    id: ci-owner
+    attributes:
+      label: CI owner
+      description: >-
+        **Leave blank if your CI runs under your own account.** Fill this in
+        only when the repositories that will run ktn-linter in CI belong to an
+        ORGANISATION. A CI run identifies itself by the owner of the repository
+        it runs in, never by whoever asked for the licence, so a licence
+        requested by a member of an org covers nothing in that org's
+        repositories. Naming an org here is a REQUEST, not a grant: it is
+        recorded as a claim and a maintainer has to confirm it with a
+        `ciOwner:<numeric-id>` label before any CI run is covered.
+      placeholder: my-org
+    validations:
+      required: false

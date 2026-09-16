@@ -25,20 +25,25 @@ import datetime
 import os
 import json
 import pathlib
+import re
 import sys
+
+# state.py owns where licence state lives and how it is keyed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
+
+# How a maintainer resolves who a CI seat is for. The value is a NUMERIC
+# account id because that is what `repository_owner_id` carries in the OIDC
+# token a runner presents — a login would have to be resolved through an API
+# call these scripts deliberately never make. `ciOwner:self` is the other
+# answer, and it has to be sayable too: it resolves the question to "the
+# requester", which is a decision, not an absence of one.
+CI_OWNER_LABEL_RE = re.compile(r"^ciOwner:(self|\d+)$")
 
 
 def licenses_dir() -> pathlib.Path:
-    """Where licence state lives.
-
-    Defaults to ``licenses/`` so the scripts stay runnable from a plain
-    checkout of ``main``. The workflow overrides it with ``LICENSES_DIR``
-    because the state now lives on its own branch, checked out into a
-    separate directory: ``main`` carries a required-status ruleset that
-    refuses a direct push, which silently stopped every re-signature for a
-    day and a half until the roster's window closed.
-    """
-    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+    """Where licence state lives; see state.licenses_dir."""
+    return state.licenses_dir()
 
 
 def record_account_id(author: str, account_id: str) -> None:
@@ -87,6 +92,103 @@ def record_account_id(author: str, account_id: str) -> None:
     accounts[author] = {"id": account_id}
     path.write_text(json.dumps(accounts, indent=2, sort_keys=True) + "\n")
     print(f"recorded @{author} as account {account_id}")
+
+
+def ci_owner_decision(labels: list) -> str:
+    """The `ciOwner:` label a maintainer applied, or "" if none.
+
+    Read from the FULL current label set rather than the one that triggered the
+    run, for the same reason `expireAt:` is: the decision has to be sayable in
+    the same breath as the approval, and a label applied afterwards did not
+    exist when the approval ran.
+    """
+    for name in labels:
+        matched = CI_OWNER_LABEL_RE.match(name)
+        if matched:
+            return matched.group(1)
+    return ""
+
+
+def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
+    """Separate WHO ASKED from WHO A CI RUN IS FOR, and never conflate them.
+
+    The requester is the account that opened the issue. The beneficiary is the
+    account whose repositories a CI run may be authorised under. For an
+    individual buying a licence for their own repositories those are the same
+    number and nothing here has to exist. For a customer whose repositories
+    belong to an organisation they are DIFFERENT numbers, and until this file
+    existed the chain recorded the requester and published it as the CI key —
+    an entitlement matched against `repository_owner_id`, which is the org's
+    id, so it never matched and nothing reported a problem. A silent no.
+
+    Keyed by the requester's numeric id, so this file needs no migration when
+    the rest of the state is re-keyed: it was never keyed on a login.
+
+    Three states, and the middle one is the point:
+
+    * no entry — the beneficiary IS the requester. The default, and correct for
+      a personal account.
+    * ``claimed`` with no ``beneficiary`` — UNRESOLVED. The request named
+      someone else and nothing here can verify the requester speaks for them.
+      build_roster.py omits the CI entry and says so on every build.
+    * ``beneficiary`` — a maintainer answered, by label. That id is the CI key.
+
+    This script does not choose the policy. Whether an organisation's CI seat
+    belongs to the organisation or to the member who bought the licence is a
+    billing question; both answers are expressible (`ciOwner:<id>` and
+    `ciOwner:self`) and neither is inferred.
+    """
+    decision = ci_owner_decision(labels)
+    if not (claimed or decision):
+        return
+    if not account_id:
+        print(
+            "::warning::a CI owner was named or decided, but no numeric account id was "
+            "captured for the requester; there is no key to record it under and the CI "
+            "entitlement cannot be expressed."
+        )
+        return
+
+    path = licenses_dir() / "ci-owners.json"
+    owners = json.loads(path.read_text() or "{}") if path.exists() else {}
+    entry = dict(owners.get(account_id, {}))
+    before = dict(entry)
+
+    if claimed:
+        entry["claimed"] = claimed
+    if decision:
+        resolved = account_id if decision == "self" else decision
+        previous = entry.get("beneficiary")
+        entry["beneficiary"] = resolved
+        entry["decidedBy"] = "maintainer"
+        # A maintainer may legitimately move it — an org changes, a licence is
+        # reassigned — but never quietly. A CI seat changing owner is exactly
+        # the change that should be readable in a run log afterwards.
+        if previous and previous != resolved:
+            print(
+                f"::warning::CI beneficiary for account {account_id} moved from "
+                f"{previous} to {resolved} by label. Every CI run under {previous} "
+                "stops being covered."
+            )
+        print(f"account {account_id}: CI beneficiary is account {resolved} (by label)")
+    elif "beneficiary" not in entry:
+        print(
+            f"::warning::account {account_id} claims CI for {claimed!r} and no maintainer has "
+            "resolved it. Its devices are published and working; it has NO CI entitlement "
+            "until a `ciOwner:<numeric-id>` label (or `ciOwner:self`) lands on an approval. "
+            "This is reported rather than guessed because publishing the requester's own id "
+            "would be an entitlement that never matches."
+        )
+    else:
+        print(
+            f"account {account_id}: CI beneficiary stays account {entry['beneficiary']}; "
+            f"this request's claim of {claimed!r} does not move a decided one."
+        )
+
+    if entry == before:
+        return
+    owners[account_id] = entry
+    path.write_text(json.dumps(owners, indent=2, sort_keys=True) + "\n")
 
 
 def record_enrolment(issue: str, uuid: str) -> None:
@@ -140,14 +242,26 @@ def main() -> None:
     account_id = sys.argv[3] if len(sys.argv) > 3 else ""
     # Likewise optional: the workflow passes github.event.issue.number.
     issue = sys.argv[4] if len(sys.argv) > 4 else ""
+    # The CI owner the request asked for, as parse_request.py read it. A claim,
+    # never a grant — see record_ci_beneficiary.
+    claimed_ci_owner = sys.argv[5] if len(sys.argv) > 5 else ""
+    labels = [label["name"] for label in json.loads(os.environ.get("LABELS_JSON", "[]"))]
 
-    path = licenses_dir() / "owners.json"
-    owners = json.loads(path.read_text()) if path.exists() else {}
-    owners[uuid] = author
-    path.write_text(json.dumps(owners, indent=2, sort_keys=True) + "\n")
-    print(f"bound {uuid} -> @{author}")
+    # Bound to the NUMERIC account id, which is the identity; the login is
+    # only a label from here on. The predecessor of this file was keyed on the
+    # login, so a released handle carried its devices — and everything counted
+    # from them — to whoever registered it next.
+    #
+    # An empty id is the run-it-by-hand case, and it is recorded as the
+    # explicit `login:` marker rather than silently as a login: that marker is
+    # not a valid id anywhere in this chain, so it gets no CI seat and the
+    # approval gate refuses its next request instead of attributing it.
+    account_key = account_id if account_id.isdigit() else state.unresolved_key(author)
+    state.bind_device(licenses_dir(), uuid, account_key)
+    print(f"bound {uuid} -> account {account_key} (@{author})")
 
     record_account_id(author, account_id)
+    record_ci_beneficiary(account_id, claimed_ci_owner, labels)
     record_enrolment(issue, uuid)
 
 
