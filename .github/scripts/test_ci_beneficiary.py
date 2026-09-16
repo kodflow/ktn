@@ -300,7 +300,12 @@ class EntitlementKeyingTest(CIBeneficiaryTestCase):
         """Record and publish one device, the way the approval chain does."""
         self.write("owners.json", {uuid: login})
         self.write("accounts.json", {login: {"id": account_id}})
-        self.write("licences.json", {login: {"expiresAt": term}})
+        #: A falsy term means NO licence record, not a record holding null.
+        #: Writing `{"expiresAt": None}` fabricates a state the approval chain
+        #: cannot produce, so a test built on it measures a shape that does not
+        #: exist and can pass while the real one fails.
+        if term:
+            self.write("licences.json", {login: {"expiresAt": term}})
         (self.licenses / f"{uuid}.pub").write_text(KEY + "\n")
 
     def write(self, name, payload):

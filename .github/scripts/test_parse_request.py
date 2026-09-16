@@ -59,6 +59,16 @@ def body(subject: str, key: str = KEY) -> str:
     return f"### Subject\n\n{subject}\n\n### Public key\n\n```\n{key}\n```\n"
 
 
+def body_with_ci_owner(subject: str, ci_owner: str, key: str = KEY) -> str:
+    """The same body, plus the optional `CI owner` section filled in.
+
+    The heading has to be present for optional_section to find it — its
+    absence is a different statement (no claim was made) and is already
+    covered by every other test in this file.
+    """
+    return body(subject, key) + f"\n### CI owner\n\n{ci_owner}\n"
+
+
 class ParseRequestTest(unittest.TestCase):
     """Covers ownership, the device quota, and the shapes that must be refused."""
 
@@ -371,6 +381,44 @@ class ParseRequestTest(unittest.TestCase):
         self.run_script(WIN, "a-holder")
 
         self.assertIn(f"uuid={WIN}", self.output.read_text())
+
+class SelfClaimTest(ParseRequestTest):
+    """Naming YOURSELF is not a claim, in either spelling.
+
+    The login was dropped and the numeric id was not — even though the
+    function's own docstring invites the id ("it is literally what the token
+    carries"). So a requester who typed their own account id got an unresolved
+    claim and NO CI entitlement until a maintainer applied a label, as a
+    reward for being precise.
+    """
+
+    def claim(self, value, author="a-holder"):
+        """Run a request whose CI-owner section holds `value`."""
+        os.environ["BODY"] = body_with_ci_owner(MAC, value)
+        os.environ["AUTHOR"] = author
+        os.environ["AUTHOR_ID"] = IDS.get(author, "1")
+        self.module.main()
+        for line in self.output.read_text().splitlines():
+            if line.startswith("ci_owner="):
+                return line.removeprefix("ci_owner=")
+        return None
+
+    def test_claiming_your_own_login_is_not_a_claim(self):
+        """Already held. Pinned here beside the row it is the control for."""
+        self.assertEqual(self.claim("a-holder"), "")
+
+    def test_claiming_your_own_numeric_id_is_not_a_claim(self):
+        """THE ROW. It recorded a claim against the requester themselves."""
+        self.assertEqual(self.claim(IDS["a-holder"]), "")
+
+    def test_claiming_someone_else_is_still_a_claim(self):
+        """The discriminator: a real claim must survive, or the two rows above
+        would pass against a function that dropped everything."""
+        self.assertEqual(self.claim("someone-else"), "someone-else")
+
+    def test_claiming_another_numeric_id_is_still_a_claim(self):
+        """An organisation's id is the whole reason this field exists."""
+        self.assertEqual(self.claim(IDS["other"]), IDS["other"])
 
 
 if __name__ == "__main__":

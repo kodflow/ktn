@@ -581,6 +581,76 @@ class PrivateMigrationTest(PublicStateTestCase):
             sys.argv = saved
         return 0
 
+class CommercialWriteRoutingTest(PublicStateTestCase):
+    """Every COMMERCIAL_FILES write must go through private_for.
+
+    Two did not. record_owner.py wrote accounts.json and ci-owners.json via
+    licenses_dir() — the PUBLIC directory — so they survived the cutover
+    entirely: migrate_private_state.py moves them off the public branch, and
+    the very next approval puts them back. audit_public_state.py is a gate once
+    a store is configured, so it would fail the FOLLOWING run and stop every
+    signature. The migration would have appeared to work and then undone itself
+    on the next customer.
+
+    These rows assert the DESTINATION rather than the content, because the
+    destination is the whole property.
+    """
+
+    def test_an_account_id_is_recorded_privately(self):
+        """Which login holds which numeric id is the link the prune removes."""
+        self.use_private_store()
+
+        load("record_owner").record_account_id("a-holder", HOLDER_ID)
+
+        self.assertTrue((self.private / "accounts.json").is_file())
+        self.assertFalse((self.public / "accounts.json").exists())
+
+    def test_a_ci_beneficiary_is_recorded_privately(self):
+        """Who negotiated a CI seat, and for whom, is contract data.
+
+        The numeric ids in it are what the roster's `ci` block already
+        discloses irreducibly — which is no reason to publish the NAMES beside
+        them as well.
+        """
+        self.use_private_store()
+
+        load("record_owner").record_ci_beneficiary(HOLDER_ID, "some-org", [])
+
+        self.assertTrue((self.private / "ci-owners.json").is_file())
+        self.assertFalse((self.public / "ci-owners.json").exists())
+
+    def test_unset_still_writes_where_it_always_did(self):
+        """The control, and the compatibility guarantee: with no store
+        configured private_for resolves to the public directory, so today's
+        behaviour is unchanged and no migration is implied."""
+        load("record_owner").record_account_id("a-holder", HOLDER_ID)
+
+        self.assertTrue((self.public / "accounts.json").is_file())
+
+    def test_every_commercial_file_written_here_lands_privately(self):
+        """The conservation check, so a NEW commercial write cannot be added
+        through the public path without this failing.
+
+        It drives the recorder the way an approval does and then asserts that
+        nothing in COMMERCIAL_FILES was left behind publicly — rather than
+        listing the two names known to have been wrong, which would say nothing
+        about the third.
+        """
+        self.use_private_store()
+        owner = load("record_owner")
+
+        owner.record_account_id("a-holder", HOLDER_ID)
+        owner.record_ci_beneficiary(HOLDER_ID, "some-org", [f"ciOwner:{HOLDER_ID}"])
+        self.state.bind_device(self.public, MAC, HOLDER_ID)
+        self.state.set_account_term(self.public, HOLDER_ID, PLANTED_TERM)
+
+        stranded = [
+            name for name in self.state.COMMERCIAL_FILES if (self.public / name).is_file()
+        ]
+        self.assertEqual(
+            stranded, [], f"{stranded} were written to the PUBLIC half despite a configured store"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

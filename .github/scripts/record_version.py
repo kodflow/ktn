@@ -25,6 +25,9 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
+
 # SemVer 2.0.0, with the leading `v` this chain publishes and without build
 # metadata. Leading zeros are rejected because SemVer says a numeric identifier
 # must not have them, and a comparison that disagrees with the tag is worse
@@ -44,8 +47,15 @@ FLOOR = "required-version.txt"
 
 
 def licenses_dir() -> pathlib.Path:
-    """Where licence state lives; see build_roster.py for the same helper."""
-    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+    """Where licence state lives — delegated, never reimplemented.
+
+    This was a second copy of the same two lines. state.licenses_dir() is the
+    one place that decides, and a duplicate is how the two drift: the moment
+    the default or the variable name changes in one, this file keeps reading
+    somewhere else and writes the version floor into a directory nothing
+    signs.
+    """
+    return state.licenses_dir()
 
 
 def fail(message: str) -> None:

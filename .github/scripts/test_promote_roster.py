@@ -383,6 +383,105 @@ class PlaceResidueTest(PromoteTestCase):
         self.assertEqual(destination.read_bytes(), b'{"ok":true}')
         self.assertFalse(destination.with_name("roster.json.incoming").exists())
 
+def shifted_roster(iat_offset_hours: float, exp_offset_hours: float) -> bytes:
+    """A roster whose window is placed exactly where a test wants it.
+
+    Planted values the code under test could not have produced: build_roster.py
+    always stamps iat at "now", so a future or inverted window can only come
+    from a wrong clock or a payload changed after it was built — which is what
+    these rows are about.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    issued = now + datetime.timedelta(hours=iat_offset_hours)
+    expires = now + datetime.timedelta(hours=exp_offset_hours)
+    payload = {
+        "iat": issued.isoformat().replace("+00:00", "Z"),
+        "exp": expires.isoformat().replace("+00:00", "Z"),
+        "subjects": {MAC: {"fp": "SHA256:" + "x" * 43}},
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+
+
+class IssuanceWindowTest(PromoteTestCase):
+    """iat was checked for PRESENCE and never parsed.
+
+    So a roster issued in the FUTURE published cleanly — and that is the
+    ratchet-poisoning vector seen from the publisher's side. A client takes its
+    anti-rollback mark from iat, so a roster stamped ahead pins every machine's
+    floor above any later legitimate publication: the estate stops, and the
+    publisher did it to itself. The SDK refuses such a window on arrival, but a
+    publisher that emits one has already taken the fleet down.
+    """
+
+    def test_a_future_issuance_is_refused(self):
+        """THE ROW. Present-but-unparsed meant this published."""
+        self.stage(roster=shifted_roster(iat_offset_hours=6, exp_offset_hours=30))
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_an_inverted_window_is_refused(self):
+        """exp at or before iat authorises nobody, and the client refuses it."""
+        self.stage(roster=shifted_roster(iat_offset_hours=24, exp_offset_hours=24))
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_a_null_issuance_is_refused_as_what_it_is(self):
+        """`str(None)` is "None", which failed to parse by luck, not by design.
+
+        The type check makes the refusal deliberate — and reaches the fields
+        that a str() would have quietly stringified into something parseable.
+        """
+        payload = json.loads(roster_bytes())
+        payload["iat"] = None
+        self.stage(roster=json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_a_numeric_issuance_is_refused(self):
+        """An epoch integer is a plausible mistake and is not this format."""
+        payload = json.loads(roster_bytes())
+        payload["iat"] = 1789000000
+        self.stage(roster=json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_a_timezone_naive_issuance_is_refused(self):
+        """An instant with no offset names no instant."""
+        payload = json.loads(roster_bytes())
+        payload["iat"] = payload["iat"].replace("Z", "")
+        self.stage(roster=json.dumps(payload, separators=(",", ":"), sort_keys=True).encode())
+
+        with self.assertRaises(SystemExit) as raised:
+            self.module.main()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertNothingPublished()
+
+    def test_the_ordinary_window_still_publishes(self):
+        """The control. Every row above would pass against a check that
+        refused everything, so the happy path has to be pinned beside them."""
+        self.stage(roster=shifted_roster(iat_offset_hours=0, exp_offset_hours=24))
+
+        self.module.main()
+
+        self.assertTrue((self.state / "roster.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

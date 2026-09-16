@@ -22,10 +22,18 @@ import os
 import pathlib
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
+
 
 def candidate_dir() -> pathlib.Path:
     """Where the unpublished candidate is staged; see build_roster.py."""
-    return pathlib.Path(os.environ.get("CANDIDATE_DIR") or os.environ.get("LICENSES_DIR", "licenses"))
+    #: CANDIDATE_DIR wins; the fallback delegates rather than restating the
+    #: LICENSES_DIR default, which is state.licenses_dir()'s to decide.
+    configured = os.environ.get("CANDIDATE_DIR")
+    if configured:
+        return pathlib.Path(configured)
+    return state.licenses_dir()
 
 
 def digest(path: pathlib.Path) -> str:

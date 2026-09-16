@@ -215,12 +215,23 @@ def migrate_terms(state_dir: pathlib.Path) -> None:
         candidate = entry["expiresAt"]
         recorded = terms.get(account_key, {}).get("expiresAt")
         if recorded is not None and recorded != candidate:
+            comparable = isinstance(recorded, str) and isinstance(candidate, str)
             print(
                 f"::warning::account {account_key} carries two terms across its logins "
-                f"({recorded} and {candidate}); keeping the earlier one, so no device "
-                "outlives the licence that authorised it."
+                f"({recorded} and {candidate}); keeping "
+                + (
+                    "the earlier one, so no device outlives the licence that authorised it."
+                    if comparable
+                    else "the one already recorded: one of the two is not a date string, "
+                    "so they cannot be ordered and guessing which is earlier could EXTEND "
+                    "a licence rather than shorten it."
+                )
             )
-            candidate = min(recorded, candidate)
+            # min() across a str and anything else raises TypeError, which
+            # aborted the whole migration over one malformed entry — and a
+            # migration that cannot finish leaves the state half re-keyed,
+            # which is the condition it exists to remove.
+            candidate = min(recorded, candidate) if comparable else recorded
         terms.setdefault(account_key, {})["expiresAt"] = candidate
     state.save(path, terms)
 

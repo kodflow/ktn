@@ -119,6 +119,13 @@ def unpack(raw: bytes) -> dict:
     except ValueError:
         result["error"] = "is not readable JSON"
         return result
+    # A JSON array or scalar is readable JSON and has no .get, so it crashed
+    # the watcher one line below — and a watcher that dies reports nothing
+    # about the origins it had not reached yet. Served content is exactly what
+    # this file is not allowed to trust the shape of.
+    if not isinstance(bundle, dict):
+        result["error"] = "is JSON but not an object, so it cannot be a signed bundle"
+        return result
     try:
         result["payload"] = base64.b64decode(bundle.get("payload", ""), validate=True)
         result["signature"] = base64.b64decode(bundle.get("sig", ""), validate=True)

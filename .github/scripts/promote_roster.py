@@ -181,6 +181,26 @@ def check_size(bundle_bytes: bytes, roster: bytes) -> None:
         )
 
 
+def instant(payload: dict, field: str) -> datetime.datetime:
+    """One timestamp field, parsed and timezone-aware, or a refusal.
+
+    `str(payload[field])` is what the previous exp check did, and it turns a
+    JSON `null` into the string "None" — which then fails to parse and is
+    caught, by luck rather than by design. The type is checked here so a null,
+    a number or a list is refused as what it is.
+    """
+    raw = payload[field]
+    if not isinstance(raw, str):
+        fail(f"the candidate roster has a non-string {field} {raw!r}; refusing to publish")
+    try:
+        parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"the candidate roster has an unparseable {field} {raw!r}")
+    if parsed.tzinfo is None:
+        fail(f"the candidate roster has a timezone-naive {field} {raw!r}")
+    return parsed
+
+
 def check_window(roster: bytes) -> dict:
     """A roster that authorises nobody is worse than the one already served."""
     try:
@@ -190,13 +210,34 @@ def check_window(roster: bytes) -> dict:
     for field in ("iat", "exp"):
         if field not in payload:
             fail(f"the candidate roster has no {field!r}; refusing to publish")
-    try:
-        expires = datetime.datetime.fromisoformat(str(payload["exp"]).replace("Z", "+00:00"))
-    except ValueError:
-        fail(f"the candidate roster has an unparseable exp {payload['exp']!r}")
-    if expires.tzinfo is None:
-        fail(f"the candidate roster has a timezone-naive exp {payload['exp']!r}")
-    hours_left = (expires - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 3600
+    issued = instant(payload, "iat")
+    expires = instant(payload, "exp")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # iat was PRESENT-only checked and never parsed, so a future issuance
+    # published cleanly — and that is the poisoning vector seen from this side.
+    # A client's anti-rollback ratchet takes its mark from IssuedAt, so a
+    # roster stamped in the future pins every machine's floor above any later
+    # legitimate publication: the estate stops, and the publisher did it.
+    #
+    # No skew tolerance, deliberately. This runs in the SAME job on the SAME
+    # runner as the build that stamped iat seconds earlier, so there is no
+    # second clock to be lenient about — a future iat means the runner's clock
+    # is wrong or the payload changed after it was built, and both are refusals.
+    if issued > now:
+        fail(
+            f"the candidate roster is issued at {payload['iat']!r}, in the FUTURE "
+            f"(now {now.isoformat()}). A client's ratchet takes its mark from iat, so "
+            "publishing this would pin every machine above any later roster and stop "
+            "the estate. Check the runner's clock. Refusing to publish."
+        )
+    if expires <= issued:
+        fail(
+            f"the candidate roster expires at {payload['exp']!r}, at or before its "
+            f"issuance {payload['iat']!r}. An inverted window authorises nobody, and "
+            "the client refuses it outright. Refusing to publish."
+        )
+    hours_left = (expires - now).total_seconds() / 3600
     if hours_left < MIN_WINDOW_HOURS:
         fail(
             f"the candidate roster has {hours_left:.1f}h of window left, under the "

@@ -158,19 +158,44 @@ def enrolments() -> dict:
     return json.loads(path.read_text() or "{}")
 
 
-def moment(stamp: str):
+def moment(stamp):
     """Parse an ISO-8601 instant, or return None when it cannot be read.
 
     None rather than a default: a missing or unreadable timestamp means the
     comparison below CANNOT be made, and every caller treats that as "do not
     conclude" rather than as an ordering.
+
+    Three ways it cannot be read, and the first version of this only handled
+    one. Measured on python3.13:
+
+    * absent — the ordinary case for a legacy record;
+    * NOT A STRING. `12345` or a list raises AttributeError on .replace, not
+      ValueError, so a corrupted enrolments.json crashed the reconciliation
+      instead of degrading to "cannot conclude" — the opposite of what the
+      paragraph above promises;
+    * TIMEZONE-NAIVE. "2026-09-15T10:00:00" parses happily into a naive
+      datetime, and comparing that with the aware one GitHub supplies raises
+      TypeError: can't compare offset-naive and offset-aware datetimes. The
+      crash would land one frame away from here, in a comparison that looks
+      total.
+
+    Both of the last two are hand-edited or legacy state rather than anything
+    an attacker supplies — the file is written by this chain — but a reconciler
+    that dies on malformed state stops replaying revocations, and a revocation
+    nobody replays is the silent failure this whole script exists to catch.
     """
-    if not stamp:
+    if not isinstance(stamp, str) or not stamp:
         return None
     try:
-        return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        parsed = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
         return None
+    #: An instant with no offset names no instant. Refuse it rather than
+    #: assume UTC: guessing would order two records against each other on an
+    #: assumption neither of them made.
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def republished_after(records: dict, decision: dict, subject: str) -> str:

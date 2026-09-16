@@ -240,7 +240,7 @@ def optional_section(body: str, heading: str) -> str:
     return ""
 
 
-def ci_owner_claim(body: str, author: str) -> str:
+def ci_owner_claim(body: str, author: str, author_id: str) -> str:
     """The CI owner the request asks for, or "" when it asks for nothing.
 
     This is the ONE place the requester≠beneficiary case becomes visible before
@@ -259,7 +259,12 @@ def ci_owner_claim(body: str, author: str) -> str:
     A maintainer resolves it, or it stays unresolved and is reported as such.
 
     Naming yourself is not a claim: it is what happens by default, so it is
-    dropped rather than left to be resolved by hand for no reason.
+    dropped rather than left to be resolved by hand for no reason. BOTH
+    spellings of yourself count — the login and the numeric id. Only the login
+    was dropped, so a requester who typed their own account id (which the
+    paragraph below explicitly invites, because it is literally what the token
+    carries) got an unresolved claim and NO CI entitlement until a maintainer
+    applied a label, as a reward for being precise.
     """
     claimed = optional_section(body, "CI owner")
     if not claimed:
@@ -273,6 +278,11 @@ def ci_owner_claim(body: str, author: str) -> str:
             "Leave it blank if your CI runs under your own account."
         )
     if claimed.lower() == author.lower():
+        return ""
+    #: The same person, spelled the way the OIDC token spells them. Dropped
+    #: for the same reason the login is: it is the default, so resolving it by
+    #: hand would be work with no decision in it.
+    if author_id and claimed == author_id:
         return ""
     print(
         f"::warning::this request asks that CI be covered for {claimed!r}, which is not "
@@ -374,7 +384,7 @@ def main() -> None:
     # Read AFTER the device checks so a malformed claim cannot be used to
     # probe ownership or the quota: by here the request is already one this
     # account is allowed to make.
-    claimed_ci_owner = ci_owner_claim(body, author)
+    claimed_ci_owner = ci_owner_claim(body, author, author_id)
 
     pathlib.Path("/tmp/subject.pub").write_text(key.rstrip() + "\n")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

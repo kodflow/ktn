@@ -75,7 +75,12 @@ def record_account_id(author: str, account_id: str) -> None:
         print(f"::error::account id {account_id!r} for @{author} is not numeric")
         sys.exit(1)
 
-    path = licenses_dir() / "accounts.json"
+    # private_for, not licenses_dir: accounts.json is in COMMERCIAL_FILES.
+    # Writing it publicly survived the cutover seam entirely — migrate_private_
+    # state.py would move it off the public branch and the very next approval
+    # would put it back, so audit_public_state.py (a gate once a store is
+    # configured) would fail the following run and stop every signature.
+    path = state.private_for(licenses_dir()) / "accounts.json"
     accounts = json.loads(path.read_text()) if path.exists() else {}
     recorded = str(accounts.get(author, {}).get("id", "") or "")
     if recorded and recorded != account_id:
@@ -188,7 +193,11 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
         )
         return
 
-    path = licenses_dir() / "ci-owners.json"
+    # Same: ci-owners.json is COMMERCIAL_FILES. Who negotiated a CI seat, and
+    # for which organisation, is contract data — and the numeric ids in it are
+    # the one thing the roster's `ci` block already discloses irreducibly, so
+    # there is no reason to publish the NAMES beside them as well.
+    path = state.private_for(licenses_dir()) / "ci-owners.json"
     owners = json.loads(path.read_text() or "{}") if path.exists() else {}
     entry = dict(owners.get(account_id, {}))
     before = dict(entry)

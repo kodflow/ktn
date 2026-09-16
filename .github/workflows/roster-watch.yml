@@ -76,11 +76,18 @@ jobs:
 
           # A genuinely different backend for the same object, which is what
           # makes the agreement between them worth checking: the CDN can serve
-          # a stale copy the API does not have. Note the contents endpoint
-          # stops returning inline content above 1MB — at that size the
-          # ceiling findings fire anyway.
-          gh api "/repos/${REPO}/contents/roster.signed.json?ref=licenses" --jq '.content' \
-            2>/dev/null | tr -dc 'A-Za-z0-9+/=' | base64 -d > "${tmp}/api.json" \
+          # a stale copy the API does not have.
+          #
+          # The RAW representation, not `.content`. The inline field stops
+          # being populated above 1MB, so the old form decoded an empty string
+          # into api.json and the comparison below read it as "the API serves
+          # nothing" — a fabricated finding, on exactly the large roster where
+          # the watcher matters most. "The ceiling findings fire anyway" was
+          # true and beside the point: a wrong answer is not excused by a
+          # right answer arriving separately. The raw media type has no such
+          # limit and needs no decode step.
+          gh api "/repos/${REPO}/contents/roster.signed.json?ref=licenses" \
+            -H "Accept: application/vnd.github.raw" > "${tmp}/api.json" 2>/dev/null \
             || echo "::warning::the contents API did not answer; the judgement below will say so"
 
           # The one question the signer cannot answer about itself.
