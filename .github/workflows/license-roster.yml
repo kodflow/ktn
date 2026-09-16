@@ -457,6 +457,29 @@ jobs:
       # roster.json beside the PREVIOUS run's roster.json.sig, and the steps
       # that followed tested only that a .sig existed. A clean candidate
       # directory has nothing to inherit.
+      # required_version's docstring states the invariant: the mirror is synced
+      # first and the floor recorded second, "so a floor never demands a
+      # version nobody can download". That ordering is a convention of the
+      # caller and nothing checked it — record_version.py accepts any
+      # well-formed SemVer tag from a repository_dispatch, so a manual
+      # dispatch, a replayed delivery, or a mirror sync that failed after
+      # dispatching all record a floor for a version that was never published.
+      #
+      # The cost is the whole estate at once: every client reads a floor it
+      # cannot meet, upgrades, finds nothing higher, and the anti-loop guard
+      # turns that into a refusal rather than a loop. Before signing is the
+      # last moment it can be caught.
+      #
+      # An unreachable release list WARNS and continues, deliberately: the
+      # roster this step would block is the one keeping every client alive, and
+      # refusing here would turn GitHub's outage into ours.
+      - name: Check the floor against a published release
+        env:
+          LICENSES_DIR: state
+          MIRROR_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/check_version_floor.py
+
       - name: Stage a clean candidate directory
         id: candidate
         run: |
