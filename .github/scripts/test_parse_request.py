@@ -22,7 +22,7 @@ BOX = "22222222-3333-4444-8555-666666666666"
 FOURTH = "33333333-4444-4555-8666-777777777777"
 # The numeric id is the identity; the login is a label. Distinct per account so
 # a test cannot pass by accident when the two are confused.
-IDS = {"kodflow": "133899878", "someone-else": "424242", "other": "777777"}
+IDS = {"a-holder": "70000001", "someone-else": "424242", "other": "777777"}
 
 
 def fixture_key(material: bytes = b"ktn test fixture key, not real!!", algorithm: bytes = b"ssh-ed25519") -> str:
@@ -104,27 +104,27 @@ class ParseRequestTest(unittest.TestCase):
 
     def test_a_first_device_is_accepted(self):
         """The ordinary first enrolment, with nothing on record yet."""
-        self.run_script(MAC, "kodflow")
+        self.run_script(MAC, "a-holder")
 
         self.assertIn(f"uuid={MAC}", self.output.read_text())
 
     def test_a_second_and_third_device_are_accepted(self):
         """The whole point: one licence, several machines, no key copying."""
-        self.enrol(MAC, "kodflow")
+        self.enrol(MAC, "a-holder")
 
-        self.run_script(WIN, "kodflow")
-        self.enrol(WIN, "kodflow")
-        self.run_script(BOX, "kodflow")
+        self.run_script(WIN, "a-holder")
+        self.enrol(WIN, "a-holder")
+        self.run_script(BOX, "a-holder")
 
         self.assertIn(f"uuid={BOX}", self.output.read_text())
 
     def test_a_fourth_device_is_refused(self):
         """The quota has to actually bind, or it is decoration."""
         for uuid in (MAC, WIN, BOX):
-            self.enrol(uuid, "kodflow")
+            self.enrol(uuid, "a-holder")
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(FOURTH, "kodflow")
+            self.run_script(FOURTH, "a-holder")
 
         self.assertNotEqual(raised.exception.code, 0)
         # Asserting only "refused" would also pass under the old
@@ -140,9 +140,9 @@ class ParseRequestTest(unittest.TestCase):
         when you cannot afford to be told the licence is full.
         """
         for uuid in (MAC, WIN, BOX):
-            self.enrol(uuid, "kodflow")
+            self.enrol(uuid, "a-holder")
 
-        self.run_script(BOX, "kodflow")
+        self.run_script(BOX, "a-holder")
 
         self.assertIn(f"uuid={BOX}", self.output.read_text())
 
@@ -153,12 +153,12 @@ class ParseRequestTest(unittest.TestCase):
         revocations killed the licence permanently, with no message saying so.
         """
         for uuid in (MAC, WIN, BOX):
-            self.enrol(uuid, "kodflow")
+            self.enrol(uuid, "a-holder")
         # Revocation deletes the key; owners.json keeps the binding so the
         # identity cannot be squatted later.
         (self.licenses / f"{BOX}.pub").unlink()
 
-        self.run_script(FOURTH, "kodflow")
+        self.run_script(FOURTH, "a-holder")
 
         self.assertIn(f"uuid={FOURTH}", self.output.read_text())
 
@@ -167,17 +167,17 @@ class ParseRequestTest(unittest.TestCase):
         self.enrol(MAC, "someone-else")
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(MAC, "kodflow")
+            self.run_script(MAC, "a-holder")
 
         self.assertNotEqual(raised.exception.code, 0)
 
     def test_quotas_json_widens_the_limit(self):
         """A team licence must be widenable without editing the script."""
         for uuid in (MAC, WIN, BOX):
-            self.enrol(uuid, "kodflow")
-        (self.licenses / "quotas.json").write_text(json.dumps({"kodflow": 5}))
+            self.enrol(uuid, "a-holder")
+        (self.licenses / "quotas.json").write_text(json.dumps({"a-holder": 5}))
 
-        self.run_script(FOURTH, "kodflow")
+        self.run_script(FOURTH, "a-holder")
 
         self.assertIn(f"uuid={FOURTH}", self.output.read_text())
 
@@ -185,17 +185,17 @@ class ParseRequestTest(unittest.TestCase):
         """An override for one account must not raise everybody's quota."""
         for uuid in (MAC, WIN, BOX):
             self.enrol(uuid, "other")
-        (self.licenses / "quotas.json").write_text(json.dumps({"kodflow": 5}))
+        (self.licenses / "quotas.json").write_text(json.dumps({"a-holder": 5}))
 
         with self.assertRaises(SystemExit):
             self.run_script(FOURTH, "other")
 
     def test_an_invalid_quota_fails_loudly(self):
         """A typo must not silently widen a licence to something unbounded."""
-        (self.licenses / "quotas.json").write_text(json.dumps({"kodflow": 0}))
+        (self.licenses / "quotas.json").write_text(json.dumps({"a-holder": 0}))
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(MAC, "kodflow")
+            self.run_script(MAC, "a-holder")
 
         self.assertNotEqual(raised.exception.code, 0)
 
@@ -209,22 +209,22 @@ class ParseRequestTest(unittest.TestCase):
         for value in (True, False):
             with self.subTest(quota=value):
                 self.setUp()
-                (self.licenses / "quotas.json").write_text(json.dumps({"kodflow": value}))
+                (self.licenses / "quotas.json").write_text(json.dumps({"a-holder": value}))
 
                 with self.assertRaises(SystemExit) as raised:
-                    self.run_script(MAC, "kodflow")
+                    self.run_script(MAC, "a-holder")
 
                 self.assertNotEqual(raised.exception.code, 0)
 
     def test_a_non_uuid_subject_is_refused(self):
         """The subject names a file path; anything but a canonical uuid is a lever."""
         with self.assertRaises(SystemExit):
-            self.run_script("../../etc/passwd", "kodflow")
+            self.run_script("../../etc/passwd", "a-holder")
 
     def test_a_non_ed25519_key_is_refused(self):
         """Narrowing the accepted algorithm narrows what the verifier handles."""
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", key="ssh-rsa AAAAB3NzaC1yc2EAAAA")
+            self.run_script(MAC, "a-holder", key="ssh-rsa AAAAB3NzaC1yc2EAAAA")
 
     # The line and the bytes are two different gates. Only the second one
     # decides whether build_roster.py can fingerprint what was committed.
@@ -237,7 +237,7 @@ class ParseRequestTest(unittest.TestCase):
         ever match, published without complaint.
         """
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", key="ssh-ed25519 AAAAtestfixturenotarealkeyAA")
+            self.run_script(MAC, "a-holder", key="ssh-ed25519 AAAAtestfixturenotarealkeyAA")
 
     def test_a_key_that_will_not_decode_is_refused(self):
         """The louder half: bad padding raises, and the raise took the roster.
@@ -246,24 +246,24 @@ class ParseRequestTest(unittest.TestCase):
         file. A refusal here costs one approval and names the file.
         """
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", key="ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAIA")
+            self.run_script(MAC, "a-holder", key="ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAIA")
 
     def test_a_blob_declaring_another_algorithm_is_refused(self):
         """The prefix a human reads and the algorithm a verifier reads must agree."""
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", key=fixture_key(algorithm=b"ssh-rsa"))
+            self.run_script(MAC, "a-holder", key=fixture_key(algorithm=b"ssh-rsa"))
 
     def test_a_blob_with_the_wrong_key_length_is_refused(self):
         """ed25519 keys are 32 bytes. Anything else is not one."""
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", key=fixture_key(material=b"too short"))
+            self.run_script(MAC, "a-holder", key=fixture_key(material=b"too short"))
 
     def test_a_blob_with_trailing_bytes_is_refused(self):
         """Room after the key material is room for something to hide in."""
         padded = base64.b64decode(fixture_key().split()[1]) + b"extra"
         with self.assertRaises(SystemExit):
             self.run_script(
-                MAC, "kodflow", key="ssh-ed25519 " + base64.b64encode(padded).decode()
+                MAC, "a-holder", key="ssh-ed25519 " + base64.b64encode(padded).decode()
             )
 
     def test_a_lying_length_prefix_is_refused_not_allocated(self):
@@ -271,12 +271,12 @@ class ParseRequestTest(unittest.TestCase):
         blob = struct.pack(">I", 0xFFFFFFFF) + b"ssh-ed25519"
         with self.assertRaises(SystemExit):
             self.run_script(
-                MAC, "kodflow", key="ssh-ed25519 " + base64.b64encode(blob).decode()
+                MAC, "a-holder", key="ssh-ed25519 " + base64.b64encode(blob).decode()
             )
 
     def test_a_key_with_a_comment_is_accepted(self):
         """`ktn-linter license create` prints one; refusing it refuses every request."""
-        self.run_script(MAC, "kodflow", key=KEY + " ktn-linter licence " + MAC)
+        self.run_script(MAC, "a-holder", key=KEY + " ktn-linter licence " + MAC)
 
         self.assertIn(f"uuid={MAC}", self.output.read_text())
 
@@ -295,38 +295,38 @@ class ParseRequestTest(unittest.TestCase):
         term and its quota, and — because the id was written every time — move
         the CI seat to the new account's id as well.
         """
-        self.enrol(MAC, "kodflow")
+        self.enrol(MAC, "a-holder")
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(WIN, "kodflow", author_id="999999")
+            self.run_script(WIN, "a-holder", author_id="999999")
 
         self.assertNotEqual(raised.exception.code, 0)
         self.assertNotIn(f"uuid={WIN}", self.output.read_text())
 
     def test_it_cannot_take_over_a_device_either(self):
         """The ownership check compares logins, so only the id can catch this."""
-        self.enrol(MAC, "kodflow")
+        self.enrol(MAC, "a-holder")
 
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", author_id="999999")
+            self.run_script(MAC, "a-holder", author_id="999999")
 
     def test_the_same_account_under_a_renamed_login_is_accepted(self):
         """A rename keeps the id. Refusing that would lock out a real customer."""
-        self.enrol(MAC, "kodflow")
+        self.enrol(MAC, "a-holder")
 
-        self.run_script(WIN, "kodflow")
+        self.run_script(WIN, "a-holder")
 
         self.assertIn(f"uuid={WIN}", self.output.read_text())
 
     def test_a_request_with_no_account_id_is_refused(self):
         """The id is how CI entitlement is matched; an approval without one is blind."""
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", author_id="")
+            self.run_script(MAC, "a-holder", author_id="")
 
     def test_a_non_numeric_account_id_is_refused(self):
         """A login smuggled in as an id would put us back where we started."""
         with self.assertRaises(SystemExit):
-            self.run_script(MAC, "kodflow", author_id="kodflow")
+            self.run_script(MAC, "a-holder", author_id="a-holder")
 
     def test_a_licence_that_predates_accounts_json_is_not_attributed(self):
         """The residual the id guard could not close, now closed by refusing.
@@ -343,10 +343,10 @@ class ParseRequestTest(unittest.TestCase):
         fact that separates them is in a billing record, so this stops and says
         so instead of picking one.
         """
-        self.enrol(MAC, "kodflow", account_id="")
+        self.enrol(MAC, "a-holder", account_id="")
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(WIN, "kodflow")
+            self.run_script(WIN, "a-holder")
 
         self.assertNotEqual(raised.exception.code, 0)
         self.assertNotIn(f"uuid={WIN}", self.output.read_text())
@@ -358,17 +358,17 @@ class ParseRequestTest(unittest.TestCase):
         `migrate_state_keys.py --resolve` writes. Without this the previous
         test would be satisfied by a permanent lockout.
         """
-        self.enrol(MAC, "kodflow", account_id="")
+        self.enrol(MAC, "a-holder", account_id="")
         # What --resolve does: the numeric id of the account that bought it.
         (self.licenses / "accounts.json").write_text(
-            json.dumps({"kodflow": {"id": IDS["kodflow"]}})
+            json.dumps({"a-holder": {"id": IDS["a-holder"]}})
         )
         # And what the migration then does with the binding it could not key.
         (self.licenses / "device-owners.json").write_text(
-            json.dumps({MAC: IDS["kodflow"]})
+            json.dumps({MAC: IDS["a-holder"]})
         )
 
-        self.run_script(WIN, "kodflow")
+        self.run_script(WIN, "a-holder")
 
         self.assertIn(f"uuid={WIN}", self.output.read_text())
 

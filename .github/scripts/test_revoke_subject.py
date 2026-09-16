@@ -48,7 +48,7 @@ class RevokeSubjectTest(unittest.TestCase):
             self.addCleanup(os.environ.pop, key, None)
         self.module = load_script()
 
-    def enrol(self, uuid, issue, login="kodflow"):
+    def enrol(self, uuid, issue, login="a-holder"):
         """Record an approval the way record_owner.py does."""
         path = self.licenses / "enrolments.json"
         enrolments = json.loads(path.read_text()) if path.exists() else {}
@@ -56,14 +56,14 @@ class RevokeSubjectTest(unittest.TestCase):
         path.write_text(json.dumps(enrolments))
         self.own(uuid, login)
 
-    def own(self, uuid, login="kodflow"):
+    def own(self, uuid, login="a-holder"):
         """Bind a device to an account, the way the approval chain does."""
         path = self.licenses / "owners.json"
         owners = json.loads(path.read_text()) if path.exists() else {}
         owners[uuid] = login
         path.write_text(json.dumps(owners))
 
-    def run_script(self, issue="", author="kodflow", claimed=MAC):
+    def run_script(self, issue="", author="a-holder", claimed=MAC):
         """Invoke main() the way the revoke job does."""
         os.environ["ISSUE"] = str(issue)
         os.environ["AUTHOR"] = author
@@ -93,7 +93,7 @@ class RevokeSubjectTest(unittest.TestCase):
         The fallback is what keeps them revocable at all; the ownership check
         below is what makes it safe.
         """
-        self.own(MAC, "kodflow")
+        self.own(MAC, "a-holder")
 
         self.run_script(issue=7, claimed=MAC)
 
@@ -104,7 +104,7 @@ class RevokeSubjectTest(unittest.TestCase):
         self.own(WIN, "someone-else")
 
         with self.assertRaises(SystemExit) as raised:
-            self.run_script(issue=7, author="kodflow", claimed=WIN)
+            self.run_script(issue=7, author="a-holder", claimed=WIN)
 
         self.assertNotEqual(raised.exception.code, 0)
         self.assertEqual(self.output.read_text(), "")
@@ -116,14 +116,14 @@ class RevokeSubjectTest(unittest.TestCase):
 
     def test_an_authorless_fallback_is_refused(self):
         """Without an author the ownership check cannot be made at all."""
-        self.own(MAC, "kodflow")
+        self.own(MAC, "a-holder")
 
         with self.assertRaises(SystemExit):
             self.run_script(issue=7, author="", claimed=MAC)
 
     def test_a_non_uuid_body_is_refused(self):
         """The subject names a file path; anything but a uuid is a lever."""
-        self.own(MAC, "kodflow")
+        self.own(MAC, "a-holder")
 
         with self.assertRaises(SystemExit):
             self.run_script(issue=7, claimed="../../etc/passwd")

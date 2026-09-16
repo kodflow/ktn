@@ -25,7 +25,7 @@ WIN = "11111111-2222-4333-8444-555555555555"
 BOX = "22222222-3333-4444-8555-666666666666"
 # State is keyed by NUMERIC account id; the login is a label. Distinct numbers
 # per account so a test cannot pass by confusing the two.
-ACCOUNT_IDS = {"kodflow": "133899878", "someone-else": "424242"}
+ACCOUNT_IDS = {"a-holder": "70000001", "someone-else": "424242"}
 
 
 def load_script():
@@ -53,7 +53,7 @@ class TermTestCase(unittest.TestCase):
         self.addCleanup(os.environ.pop, "LICENSES_DIR", None)
         self.module = load_script()
 
-    def bind(self, uuid, account="kodflow", published=True, term=None):
+    def bind(self, uuid, account="a-holder", published=True, term=None):
         """Record a device the way record_owner.py does, optionally published.
 
         Bound to the account's NUMERIC id, and the login→id directory is
@@ -102,7 +102,7 @@ class TermTestCase(unittest.TestCase):
         path = self.licenses / f"{uuid}.meta.json"
         return json.loads(path.read_text())["expiresAt"] if path.exists() else None
 
-    def licence_of(self, account="kodflow"):
+    def licence_of(self, account="a-holder"):
         """The term recorded for the account itself, or None.
 
         Read from the id-keyed file: the term belongs to an account, and an
@@ -340,7 +340,7 @@ class MalformedStateTest(TermTestCase):
                 self.setUp()
                 self.bind(MAC)
                 (self.licenses / "licences.json").write_text(
-                    json.dumps({"kodflow": {"expiresAt": falsey}}) + "\n"
+                    json.dumps({"a-holder": {"expiresAt": falsey}}) + "\n"
                 )
 
                 with self.assertRaises(SystemExit):
@@ -351,7 +351,7 @@ class MalformedStateTest(TermTestCase):
                 self.setUp()
                 self.bind(MAC)
                 (self.licenses / "account-terms.json").write_text(
-                    json.dumps({ACCOUNT_IDS["kodflow"]: {"expiresAt": falsey}}) + "\n"
+                    json.dumps({ACCOUNT_IDS["a-holder"]: {"expiresAt": falsey}}) + "\n"
                 )
 
                 with self.assertRaises(SystemExit):

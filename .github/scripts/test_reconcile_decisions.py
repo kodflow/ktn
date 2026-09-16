@@ -54,7 +54,7 @@ class ReconcileTestCase(unittest.TestCase):
             self.addCleanup(os.environ.pop, key, None)
         self.module = load_script()
 
-    def publish(self, uuid, issue, login="kodflow"):
+    def publish(self, uuid, issue, login="a-holder"):
         """Enrol a device the way the approval chain does, and record its issue."""
         (self.state / f"{uuid}.pub").write_text(PUBLIC_KEY)
         (self.state / f"{uuid}.meta.json").write_text('{"expiresAt":"2027-03-01T00:00:00Z"}\n')
@@ -110,7 +110,7 @@ class ReconcileTestCase(unittest.TestCase):
 
 def event(identity, label, issue, at="2026-09-15T10:00:00Z", **extra):
     """One label event in the shape the workflow hands over."""
-    return {"id": identity, "label": label, "issue": issue, "created_at": at, "actor": "kodflow", **extra}
+    return {"id": identity, "label": label, "issue": issue, "created_at": at, "actor": "a-holder", **extra}
 
 
 class RevocationTest(ReconcileTestCase):
@@ -169,8 +169,8 @@ class RevocationTest(ReconcileTestCase):
 
         self.decide(event(901, "license:revoked", 7))
 
-        self.assertEqual(self.load("owners.json")[MAC], "kodflow")
-        self.assertIn("expiresAt", self.load("licences.json")["kodflow"])
+        self.assertEqual(self.load("owners.json")[MAC], "a-holder")
+        self.assertIn("expiresAt", self.load("licences.json")["a-holder"])
 
     def test_the_issue_body_cannot_redirect_a_revocation(self):
         """Resolution is from enrolments.json, written at approval time.
@@ -336,7 +336,7 @@ class LedgerTest(ReconcileTestCase):
                         "created_at": "2026-09-15T10:00:00Z",
                         "label": {"name": "license:revoked"},
                         "issue": {"number": 7},
-                        "actor": {"login": "kodflow"},
+                        "actor": {"login": "a-holder"},
                     }
                 ]
             )
@@ -367,7 +367,7 @@ class SupersededRevocationTest(ReconcileTestCase):
         """Enrol under a NEW issue with a real timestamp, as an approval does."""
         self.publish(uuid, issue=issue)
         enrolments = self.load("enrolments.json")
-        enrolments[str(issue)] = {"subject": uuid, "login": "kodflow", "account": "1", "at": at}
+        enrolments[str(issue)] = {"subject": uuid, "login": "a-holder", "account": "1", "at": at}
         self.save("enrolments.json", enrolments)
 
     def test_a_revocation_is_not_replayed_over_a_later_republication(self):

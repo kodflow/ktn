@@ -62,7 +62,7 @@ class RosterTestCase(unittest.TestCase):
         """Publish a device's key, which is what makes it active."""
         (self.licenses / f"{uuid}.pub").write_text(PUBLIC_KEY)
 
-    def enrol(self, uuid, login="kodflow", account_id="133899878", term=None, published=True):
+    def enrol(self, uuid, login="a-holder", account_id="70000001", term=None, published=True):
         """Record a device the way the approval chain does."""
         owners_path = self.licenses / "owners.json"
         owners = json.loads(owners_path.read_text()) if owners_path.exists() else {}
@@ -101,7 +101,7 @@ class CIEntitlementTest(RosterTestCase):
         """The ordinary case: a licence with a published device covers its CI."""
         self.enrol(MAC, term="2027-03-01T00:00:00Z")
 
-        self.assertEqual(self.entitlements(), {"133899878": {"exp": "2027-03-01T00:00:00Z"}})
+        self.assertEqual(self.entitlements(), {"70000001": {"exp": "2027-03-01T00:00:00Z"}})
 
     def test_the_key_is_the_numeric_id_not_the_login(self):
         """A login can be renamed and a released one reclaimed by someone else.
@@ -109,10 +109,10 @@ class CIEntitlementTest(RosterTestCase):
         Matching a CI run on the name would turn a freed handle into a way in;
         GitHub does not reissue an account id.
         """
-        self.enrol(MAC, login="kodflow", account_id="42")
+        self.enrol(MAC, login="a-holder", account_id="42")
 
         self.assertIn("42", self.entitlements())
-        self.assertNotIn("kodflow", self.entitlements())
+        self.assertNotIn("a-holder", self.entitlements())
 
     def test_an_account_with_no_active_device_is_not_entitled(self):
         """A licence nobody uses should not keep handing out free CI.
@@ -137,7 +137,7 @@ class CIEntitlementTest(RosterTestCase):
 
     def test_one_account_does_not_entitle_another(self):
         """Entitlement follows the licence, and a licence is one account."""
-        self.enrol(MAC, login="kodflow", account_id="1")
+        self.enrol(MAC, login="a-holder", account_id="1")
         self.enrol(WIN, login="someone-else", account_id="2", published=False)
 
         self.assertEqual(list(self.entitlements()), ["1"])
@@ -146,7 +146,7 @@ class CIEntitlementTest(RosterTestCase):
         """CI expires exactly when the devices do — one licence, one date."""
         self.enrol(MAC, term="2028-12-31T00:00:00Z")
 
-        self.assertEqual(self.entitlements()["133899878"]["exp"], "2028-12-31T00:00:00Z")
+        self.assertEqual(self.entitlements()["70000001"]["exp"], "2028-12-31T00:00:00Z")
 
     def test_an_account_with_no_term_is_entitled_without_one(self):
         """A missing term reads as "none recorded", never as "already expired".
@@ -156,7 +156,7 @@ class CIEntitlementTest(RosterTestCase):
         """
         self.enrol(MAC, term=None)
 
-        self.assertEqual(self.entitlements(), {"133899878": {}})
+        self.assertEqual(self.entitlements(), {"70000001": {}})
 
 
 class RosterDocumentTest(RosterTestCase):
@@ -177,7 +177,7 @@ class RosterDocumentTest(RosterTestCase):
 
         roster = self.roster()
 
-        self.assertEqual(roster["ci"], {"133899878": {"exp": "2027-03-01T00:00:00Z"}})
+        self.assertEqual(roster["ci"], {"70000001": {"exp": "2027-03-01T00:00:00Z"}})
 
     def test_subjects_are_unaffected_by_the_ci_block(self):
         """The device path must not change shape because CI gained one."""
