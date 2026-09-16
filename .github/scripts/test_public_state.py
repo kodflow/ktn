@@ -430,6 +430,157 @@ class AuditTest(PublicStateTestCase):
         for name in audit.PUBLIC_ARTEFACTS:
             self.assertNotIn(name, self.state.COMMERCIAL_FILES)
 
+class PrivateMigrationTest(PublicStateTestCase):
+    """migrate_private_state.py: the half of the seam that was missing.
+
+    PRIVATE_STATE_DIR redirects every NEW write. Nothing moved what was
+    already on the public branch, and that gap had the whole estate behind it:
+    a maintainer sets the variable believing the cutover done, the old files
+    stay public, audit_public_state.py BECOMES a gate and fails, the signing
+    job dies before building a roster, and every client refuses to run within
+    RosterLifetime — 24 hours.
+
+    The last test in this class is the one that matters: after the move, the
+    audit PASSES. That is what makes "set one variable" true rather than
+    catastrophic.
+    """
+
+    def migrate(self, *arguments):
+        """Run the migration the way the workflow would."""
+        self.run_with_argv("migrate_private_state", list(arguments))
+
+    def test_it_does_nothing_without_a_private_store(self):
+        """Unset is the state of the world today, not a fault."""
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        self.migrate()
+
+        self.assertTrue((self.public / "accounts.json").is_file())
+
+    def test_it_refuses_a_store_pointed_at_the_public_directory(self):
+        """Moving files within one directory would delete the only copy."""
+        os.environ["PRIVATE_STATE_DIR"] = str(self.public)
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        with self.assertRaises(SystemExit) as raised:
+            self.migrate()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertTrue((self.public / "accounts.json").is_file())
+
+    def test_it_moves_a_commercial_file_off_the_public_branch(self):
+        """The ordinary cutover: present publicly, absent afterwards."""
+        self.use_private_store()
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        self.migrate()
+
+        self.assertFalse((self.public / "accounts.json").exists())
+        self.assertEqual(
+            json.loads((self.private / "accounts.json").read_text()),
+            {"a-holder": {"id": HOLDER_ID}},
+        )
+
+    def test_it_merges_rather_than_replaces(self):
+        """The redirect may already have written privately BEFORE this runs.
+
+        This script runs after those writes, not before them, so replacing the
+        private copy would lose a device or a term recorded in between —
+        a customer's machine going dark for a reason nobody could trace.
+        """
+        self.use_private_store()
+        self.write(self.public, "device-owners.json", {"uuid-public": HOLDER_ID})
+        self.write(self.private, "device-owners.json", {"uuid-private": HOLDER_ID})
+
+        self.migrate()
+
+        self.assertEqual(
+            json.loads((self.private / "device-owners.json").read_text()),
+            {"uuid-public": HOLDER_ID, "uuid-private": HOLDER_ID},
+        )
+
+    def test_the_same_key_with_the_same_value_is_not_a_conflict(self):
+        """A stale duplicate must not block a cutover."""
+        self.use_private_store()
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+        self.write(self.private, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        self.migrate()
+
+        self.assertFalse((self.public / "accounts.json").exists())
+
+    def test_the_same_key_with_different_values_refuses_everything(self):
+        """Two answers to one question. Choosing either discards a contract.
+
+        And the refusal is total: a partial move leaves exactly the
+        half-finished state this whole mechanism exists to prevent, so the
+        second file must still be public afterwards.
+        """
+        self.use_private_store()
+        self.write(self.public, "account-terms.json", {HOLDER_ID: "2027-01-01T00:00:00Z"})
+        self.write(self.private, "account-terms.json", {HOLDER_ID: "2030-01-01T00:00:00Z"})
+        self.write(self.public, "quotas.json", {HOLDER_ID: 5})
+
+        with self.assertRaises(SystemExit) as raised:
+            self.migrate()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertEqual(
+            json.loads((self.private / "account-terms.json").read_text()),
+            {HOLDER_ID: "2030-01-01T00:00:00Z"},
+        )
+        self.assertTrue((self.public / "quotas.json").is_file())
+
+    def test_check_reports_without_moving_anything(self):
+        """A report must never be the thing that performs the change."""
+        self.use_private_store()
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        self.migrate("--check")
+
+        self.assertTrue((self.public / "accounts.json").is_file())
+        self.assertFalse((self.private / "accounts.json").exists())
+
+    def test_a_completed_cutover_is_a_no_op(self):
+        """Running it twice must be safe; the schedule may call it every run."""
+        self.use_private_store()
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+
+        self.migrate()
+        self.migrate()
+
+        self.assertFalse((self.public / "accounts.json").exists())
+        self.assertTrue((self.private / "accounts.json").is_file())
+
+    def test_the_audit_passes_after_the_migration(self):
+        """THE POINT. Before this script, configuring a private store made the
+        audit fail for ever, which killed the signing job and the estate with
+        it. The cutover has to be ACHIEVABLE, not merely describable.
+        """
+        self.publish_roster_trio()
+        self.write(self.public, "accounts.json", {"a-holder": {"id": HOLDER_ID}})
+        self.write(self.public, "account-terms.json", {HOLDER_ID: "2027-01-01T00:00:00Z"})
+        self.use_private_store()
+
+        #: Red first, or the row below proves nothing about the migration.
+        self.assertNotEqual(self.audit(), 0)
+
+        self.migrate()
+
+        self.assertEqual(self.audit(), 0)
+
+    def audit(self):
+        """Run the disclosure audit and return its exit code."""
+        saved = sys.argv
+        sys.argv = ["audit_public_state.py"]
+        try:
+            load("audit_public_state").main()
+        except SystemExit as raised:
+            return raised.code
+        finally:
+            sys.argv = saved
+        return 0
+
 
 if __name__ == "__main__":
     unittest.main()

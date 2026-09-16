@@ -156,6 +156,31 @@ jobs:
           ref: licenses
           path: state
 
+      # INERT UNTIL CONFIGURED. `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` in this block is false and nothing below changes — which is
+      # the property that lets this ship before the store exists.
+      #
+      # The commercial half of the licence state — which accounts are
+      # customers, when each term ends, who negotiated extra seats, which login
+      # holds which device — has no business on a public branch. state.py's
+      # `private_for` already redirects every write once PRIVATE_STATE_DIR is
+      # set; this is where the workflow points it somewhere real.
+      #
+      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
+      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
+      # write another.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
+
       - name: Extract and validate the request
         id: request
         env:
@@ -214,6 +239,20 @@ jobs:
           git commit -m "licence: publish ${UUID}"
           git push origin HEAD:licenses
 
+      # The private half is a separate repository, so it needs its own commit.
+      # `git diff --quiet` guards a no-op: most runs write nothing private, and
+      # a schedule must not fail over having had nothing to say.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: record the publication"
+          git push
+
       - name: Close the request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -235,6 +274,31 @@ jobs:
         with:
           ref: licenses
           path: state
+
+      # INERT UNTIL CONFIGURED. `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` in this block is false and nothing below changes — which is
+      # the property that lets this ship before the store exists.
+      #
+      # The commercial half of the licence state — which accounts are
+      # customers, when each term ends, who negotiated extra seats, which login
+      # holds which device — has no business on a public branch. state.py's
+      # `private_for` already redirects every write once PRIVATE_STATE_DIR is
+      # set; this is where the workflow points it somewhere real.
+      #
+      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
+      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
+      # write another.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
 
       - name: Resolve the subject
         id: subject
@@ -271,6 +335,20 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "licence: revoke ${UUID}"
           git push origin HEAD:licenses
+
+      # The private half is a separate repository, so it needs its own commit.
+      # `git diff --quiet` guards a no-op: most runs write nothing private, and
+      # a schedule must not fail over having had nothing to say.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: record the revocation"
+          git push
 
       - name: Note the revocation
         env:
@@ -344,6 +422,21 @@ jobs:
           ref: licenses
           path: state
 
+      # INERT UNTIL CONFIGURED — `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` below is false and the signing path is unchanged. See the
+      # publish job for why a PAT rather than GITHUB_TOKEN.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
+
       # Reported, never enforced. Licence state is keyed by numeric account id
       # now; a branch still carrying login-keyed files is READ through the
       # fallback in state.py, so an un-migrated state cannot stop a signature —
@@ -374,6 +467,23 @@ jobs:
       # impossible to bootstrap at all. The strict form of that check runs
       # after publication, where absence can only mean a run that produced
       # nothing.
+      # BEFORE the audit, and that order is the entire safety property.
+      #
+      # PRIVATE_STATE_DIR redirects every NEW write; nothing moved what was
+      # already public. So configuring a store used to mean: old files stay
+      # public, the audit below BECOMES a gate and fails, this job dies before
+      # building a roster, and every client refuses to run within 24 hours.
+      # Setting one variable would have taken the estate down.
+      #
+      # Running the move here makes the cutover achievable on the first
+      # scheduled run after the variable is set, with no operator step. It is
+      # idempotent, so every later run is a no-op that prints one line.
+      - name: Move the commercial half off the public branch
+        if: vars.PRIVATE_STATE_REPO != ''
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/migrate_private_state.py
+
       - name: Report what the public branch discloses
         env:
           LICENSES_DIR: state
@@ -454,6 +564,21 @@ jobs:
           done < "${tmp}/licence-issues.txt"
 
           python3 .github/scripts/reconcile_decisions.py "${events}"
+
+      # The private half is a separate repository and needs its own commit.
+      # Placed before the reconciliation push so that if the public push fails,
+      # the private move is already durable rather than repeated next run
+      # against a branch that has since moved.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: move the commercial half off the public branch"
+          git push
 
       - name: Commit the reconciliation
         working-directory: state
