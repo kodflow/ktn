@@ -520,48 +520,34 @@ jobs:
           events="${tmp}/label-events.jsonl"
           : > "${events}"
 
-          # Only issues carrying a licence label, and only their `labeled`
-          # events: a decision's identity is that event's own id — a maintainer
-          # is the only one who can produce one, and nobody can edit one.
+          # THE REPOSITORY'S OWN EVENT HISTORY, not its current labels.
           #
-          # Costs one call per 100 labelled issues plus one per licence issue,
-          # three times an hour. At this authority's size that is a rounding
-          # error against the 1000/h GITHUB_TOKEN budget; past a few hundred
-          # issues, move to the repo-wide /issues/events endpoint, whose cost
-          # follows activity rather than history.
+          # This filtered issues by the labels they carry NOW and then read
+          # each one's events. A decision's identity is its label EVENT — a
+          # maintainer is the only one who can produce one and nobody can edit
+          # one — but the discovery in front of it depended on mutable state:
+          # remove both licence labels from an issue whose revocation push was
+          # lost, and that issue disappears from every future scan. withdraw()
+          # is then never reached and the device stays in the signed roster,
+          # for ever, with nothing reporting it. A lost APPROVAL has a customer
+          # asking about it; a lost REVOCATION has nobody.
           #
-          # PAGINATED RATHER THAN CAPPED. This was `gh issue list --limit 500`,
-          # and that cap was a bound on CORRECTNESS, not on cost: past 500
-          # labelled issues the oldest fall out of the window, and this loop is
-          # what replays a revocation whose state commit never landed. A lost
-          # APPROVAL has a customer asking about it; a lost REVOCATION has
-          # nobody — so the one that silently stops being reconciled is the one
-          # that matters. Raising the cap moves the cliff; detecting saturation
-          # would trade a security hole for a signing outage. Paginating removes
-          # the choice.
+          # /issues/events is repo-wide and immutable: it carries every label
+          # event with the issue it belongs to, whatever that issue looks like
+          # today. Its cost follows ACTIVITY rather than history, which is what
+          # the comment this replaces already recommended for a different
+          # reason (the per-issue fan-out).
           #
           # `--paginate` without `--slurp` emits each page separately, so --jq
-          # runs per page; /issues includes pull requests, hence the
-          # `.pull_request == null` filter, which `gh issue list` did for us.
-          for label in license:approved license:revoked; do
-            gh api --paginate \
-              "/repos/${REPO}/issues?labels=${label//:/%3A}&state=all&per_page=100" \
-              --jq '.[] | select(.pull_request == null) | .number'
-          done | sort -un > "${tmp}/licence-issues.txt"
-          echo "reconciling $(wc -l < "${tmp}/licence-issues.txt") licence issue(s)"
-
-          while read -r number; do
-            [ -n "${number}" ] || continue
-            gh api --paginate "/repos/${REPO}/issues/${number}/events" > "${tmp}/events-${number}.json"
-            # The per-issue endpoint does not echo the issue back, so the number
-            # is injected here rather than parsed out of anything editable.
-            jq -c --arg issue "${number}" \
-              '.[] | select(.event == "labeled")
-                   | select(.label.name == "license:approved" or .label.name == "license:revoked")
-                   | {id: .id, created_at: .created_at, label: .label.name,
-                      issue: ($issue | tonumber)}' \
-              "${tmp}/events-${number}.json" >> "${events}"
-          done < "${tmp}/licence-issues.txt"
+          # runs per page. The issue number comes from the event itself here,
+          # so nothing has to be injected — and pull requests carry no licence
+          # label, so no `.pull_request` filter is needed either.
+          gh api --paginate "/repos/${REPO}/issues/events?per_page=100" --jq '
+            .[] | select(.event == "labeled")
+                | select(.label.name == "license:approved" or .label.name == "license:revoked")
+                | {id: .id, created_at: .created_at, label: .label.name,
+                   issue: .issue.number}' >> "${events}"
+          echo "reconciling $(wc -l < "${events}") licence decision(s) from the repository's event history"
 
           python3 .github/scripts/reconcile_decisions.py "${events}"
 

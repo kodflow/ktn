@@ -85,6 +85,29 @@ class ReconcileTestCase(unittest.TestCase):
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
+    def seal_decision(self, decision):
+        """Record one decision in the ledger as already processed.
+
+        seal_ledger writes a bare {id, outcome} marker, which is enough to
+        make a run "not a first one" and carries no decision time. A test that
+        needs the reconciler to KNOW when an approval was decided has to write
+        the decision itself, exactly as append_ledger does.
+        """
+        #: In the shape the LEDGER holds, not the shape the API serves:
+        #: decisions() normalises `created_at` into `at`, and append_ledger
+        #: writes the normalised decision. Sealing the raw event instead
+        #: records a decision with no readable time, which is silently skipped.
+        entry = {
+            "id": str(decision["id"]),
+            "issue": decision["issue"],
+            "label": decision["label"],
+            "at": decision.get("created_at", decision.get("at", "")),
+            "outcome": "seed",
+        }
+        path = self.state / self.module.LEDGER
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+
     def seal_ledger(self, *ids):
         """Mark decisions as already processed, so the run is not a first one."""
         path = self.state / self.module.LEDGER
@@ -363,17 +386,35 @@ class SupersededRevocationTest(ReconcileTestCase):
     ledger's point of view the revocation simply took effect.
     """
 
-    def republish(self, uuid, issue, at):
-        """Enrol under a NEW issue with a real timestamp, as an approval does."""
+    def republish(self, uuid, issue, decided, persisted=None):
+        """Enrol under a NEW issue, with its APPROVAL DECISION time recorded.
+
+        Two clocks, and keeping them apart is the point of this class now.
+        `decided` is when the maintainer applied the label — a label event, so
+        it reaches the reconciler through the ledger. `persisted` is when the
+        approval workflow got round to writing enrolments.json, which is what
+        record_owner.py stamps and which the first version of this comparison
+        used by mistake. It defaults to `decided` so the ordinary case reads
+        simply; a row that needs them to disagree says so.
+        """
         self.publish(uuid, issue=issue)
         enrolments = self.load("enrolments.json")
-        enrolments[str(issue)] = {"subject": uuid, "login": "a-holder", "account": "1", "at": at}
+        enrolments[str(issue)] = {
+            "subject": uuid,
+            "login": "a-holder",
+            "account": "1",
+            "at": persisted if persisted is not None else decided,
+        }
         self.save("enrolments.json", enrolments)
+        #: The approval's own label event, sealed into the ledger as an
+        #: already-processed decision — which is how a real run sees an
+        #: approval taken before the revocation it is now reconciling.
+        self.seal_decision(event(8000 + int(issue), "license:approved", issue, at=decided))
 
     def test_a_revocation_is_not_replayed_over_a_later_republication(self):
         """THE ROW. Before this, the key was withdrawn and nothing said so."""
-        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
-        self.republish(MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.republish(MAC, issue=7, decided="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, decided="2026-09-15T11:00:00Z")
         self.seal_ledger()
 
         self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
@@ -388,8 +429,8 @@ class SupersededRevocationTest(ReconcileTestCase):
         reconciliation report names it. Publishing a "superseded" line nobody
         reads would be the same silence with extra steps.
         """
-        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
-        self.republish(MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.republish(MAC, issue=7, decided="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, decided="2026-09-15T11:00:00Z")
         self.seal_ledger()
 
         self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
@@ -400,8 +441,8 @@ class SupersededRevocationTest(ReconcileTestCase):
     def test_an_earlier_republication_does_not_excuse_the_revocation(self):
         """Order is the whole rule. A key published BEFORE the revocation is
         exactly what the revocation was about, and must still be withdrawn."""
-        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
-        self.republish(MAC, issue=8, at="2026-09-15T09:30:00Z")
+        self.republish(MAC, issue=7, decided="2026-09-15T09:00:00Z")
+        self.republish(MAC, issue=8, decided="2026-09-15T09:30:00Z")
         self.seal_ledger()
 
         self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
@@ -411,8 +452,57 @@ class SupersededRevocationTest(ReconcileTestCase):
 
     def test_a_different_subject_is_not_a_republication(self):
         """Another device enrolling later says nothing about this one."""
-        self.republish(MAC, issue=7, at="2026-09-15T09:00:00Z")
-        self.republish(OTHER_MAC, issue=8, at="2026-09-15T11:00:00Z")
+        self.republish(MAC, issue=7, decided="2026-09-15T09:00:00Z")
+        self.republish(OTHER_MAC, issue=8, decided="2026-09-15T11:00:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertFalse((self.state / f"{MAC}.pub").is_file())
+        self.assertEqual(self.ledger()[-1]["outcome"], "applied")
+
+    def test_an_approval_persisted_late_does_not_excuse_the_revocation(self):
+        """THE ROW THIS COMPARISON GOT WRONG.
+
+        The approval for issue 8 was DECIDED at 09:00, before the revocation at
+        10:00 — but its workflow only wrote enrolments.json at 11:00, after it.
+        The concurrency group serialises this workflow, so that ordering is
+        ordinary rather than exotic.
+
+        Comparing the revocation's decision time against the record's WRITE
+        time made the older approval look newer, marked the revocation
+        superseded, and left a withdrawn device in the signed roster — the
+        silent failure this class exists to prevent, reintroduced inside it.
+        """
+        self.republish(MAC, issue=7, decided="2026-09-15T08:00:00Z")
+        self.republish(MAC, issue=8, decided="2026-09-15T09:00:00Z",
+                       persisted="2026-09-15T11:00:00Z")
+        self.seal_ledger()
+
+        self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))
+
+        self.assertFalse(
+            (self.state / f"{MAC}.pub").is_file(),
+            "the revocation was decided after every approval and must still withdraw",
+        )
+        self.assertEqual(self.ledger()[-1]["outcome"], "applied")
+
+    def test_an_approval_with_no_known_decision_time_replays_the_revocation(self):
+        """An enrolment older than the ledger names no decision time.
+
+        The safe direction is chosen deliberately: concluding "superseded"
+        wrongly leaves a revoked device authorised, while replaying wrongly
+        withdraws a key a maintainer republished — which is reported as
+        `applied` and fixed by re-applying the label. One failure is silent,
+        the other is visible.
+        """
+        #: No seal_decision for issue 8: only its enrolment record exists.
+        self.publish(MAC, issue=7)
+        self.publish(MAC, issue=8)
+        enrolments = self.load("enrolments.json")
+        enrolments["8"] = {"subject": MAC, "login": "a-holder", "account": "1",
+                           "at": "2026-09-15T11:00:00Z"}
+        self.save("enrolments.json", enrolments)
         self.seal_ledger()
 
         self.decide(event(901, "license:revoked", 7, at="2026-09-15T10:00:00Z"))

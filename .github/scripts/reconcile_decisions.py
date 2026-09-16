@@ -175,7 +175,7 @@ def moment(stamp):
     return state.instant(stamp)
 
 
-def republished_after(records: dict, decision: dict, subject: str) -> str:
+def republished_after(records: dict, approvals: dict, decision: dict, subject: str) -> str:
     """The issue that re-published this subject AFTER this revocation, if any.
 
     A revocation is replayed on the strength of its event id alone: the id is
@@ -191,11 +191,27 @@ def republished_after(records: dict, decision: dict, subject: str) -> str:
     the ledger's point of view the revocation simply took effect.
 
     So the enrolment records are consulted for a LATER publication of the same
-    subject. Both sides carry an ISO-8601 instant: the decision's is the label
-    event's `created_at`, the record's is the `at` record_owner.py stamps at
-    approval. When either is unreadable this returns "" — the caller then
-    behaves as before, because refusing to replay on the strength of a
-    timestamp it could not read would be the opposite failure.
+    subject — and the comparison is DECISION TIME against DECISION TIME, which
+    the first version of this got wrong.
+
+    It compared the revocation's label-event `created_at` against
+    enrolments.json's `at`, and those are two different clocks.
+    record_owner.py stamps `at` when the approval WORKFLOW RAN, not when the
+    maintainer decided: the concurrency group serialises this workflow, so an
+    approval decided BEFORE a revocation can be persisted AFTER it. That made
+    the older approval look newer, marked the revocation superseded, and left
+    a withdrawn device in the signed roster — the exact silent failure this
+    function was added to prevent, reintroduced inside it.
+
+    `approvals` is therefore the decision time of each issue's approval, taken
+    from the label events themselves (the ledger plus this run's observations).
+
+    When the approval's decision time is UNKNOWN — an enrolment older than the
+    ledger — this returns "" and the revocation is REPLAYED. That direction is
+    chosen, not accidental: concluding "superseded" wrongly leaves a revoked
+    device authorised, while replaying wrongly withdraws a key a maintainer
+    republished, which is reported as `applied` and fixed by re-applying the
+    label. One failure is silent and the other is visible.
 
     Note what is NOT decided here. Whether a revoked machine may re-enrol at
     all is a policy question, and the answer might well be no. What this
@@ -210,10 +226,36 @@ def republished_after(records: dict, decision: dict, subject: str) -> str:
             continue
         if record.get("subject") != subject:
             continue
-        published = moment(record.get("at", ""))
-        if published is not None and published > taken:
+        #: The APPROVAL's decision time, never the record's write time.
+        decided = moment(approvals.get(str(issue), ""))
+        if decided is not None and decided > taken:
             return str(issue)
     return ""
+
+
+def approval_times(observed: list, processed: dict) -> dict:
+    """The decision time of each issue's most recent approval, by issue.
+
+    From the label EVENTS — the ledger's recorded decisions plus the ones this
+    run has just read — and never from enrolments.json, whose `at` is when a
+    workflow got round to writing the state rather than when a maintainer
+    decided anything.
+
+    Most recent wins: an issue approved, revoked and approved again names the
+    last approval, which is the one a revocation would have to be older than.
+    """
+    latest = {}
+    for decision in list(processed.values()) + list(observed):
+        if decision.get("label") != APPROVED:
+            continue
+        issue = str(decision.get("issue", ""))
+        stamp = decision.get("at", "")
+        if not issue or moment(stamp) is None:
+            continue
+        held = latest.get(issue)
+        if held is None or moment(stamp) > moment(held):
+            latest[issue] = stamp
+    return latest
 
 
 def withdraw(subject: str) -> bool:
@@ -234,7 +276,7 @@ def withdraw(subject: str) -> bool:
     return True
 
 
-def judge(decision: dict, records: dict) -> tuple:
+def judge(decision: dict, records: dict, approvals: dict) -> tuple:
     """Decide what this decision still needs, and say so in one word.
 
     Returns the outcome and a note. The outcome is what goes in the ledger; the
@@ -261,7 +303,7 @@ def judge(decision: dict, records: dict) -> tuple:
             "device it published, so the revocation cannot be applied from durable "
             "state. Confirm by hand that the device's key is gone from the branch.",
         )
-    later = republished_after(records, decision, subject)
+    later = republished_after(records, approvals, decision, subject)
     if later:
         return (
             "superseded",
@@ -286,6 +328,9 @@ def main() -> None:
     observed = decisions(read_events(sys.argv[1] if len(sys.argv) > 1 else "-"))
     processed = load_ledger(ledger_path)
     records = enrolments()
+    #: Decision times from the label events, so nothing compares a maintainer's
+    #: decision against the moment a workflow got round to writing state.
+    approvals = approval_times(observed, processed)
 
     now = (
         datetime.datetime.now(datetime.timezone.utc)
@@ -306,7 +351,7 @@ def main() -> None:
             # were taken — and no action is available for them either way.
             outcome, note = "seed", ""
         else:
-            outcome, note = judge(decision, records)
+            outcome, note = judge(decision, records, approvals)
         entries.append({**decision, "outcome": outcome, "reconciled_at": now, "run": run})
         if outcome == "applied":
             applied.append(note)
