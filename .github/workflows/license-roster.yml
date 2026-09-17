@@ -166,15 +166,25 @@ jobs:
       # `private_for` already redirects every write once PRIVATE_STATE_DIR is
       # set; this is where the workflow points it somewhere real.
       #
-      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
-      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
-      # write another.
+      # A deploy key rather than GITHUB_TOKEN, because GITHUB_TOKEN is scoped to
+      # THIS repository and can neither read nor write another. A PAT would also
+      # cross that boundary, and the first draft of this block asked for one —
+      # but a PAT is minted against an ACCOUNT, so its reach is whatever that
+      # account can touch, and the only human here administers three orgs. A
+      # write-enabled deploy key reaches exactly one repository, cannot be used
+      # for anything else, and has no expiry to renew on a schedule nobody
+      # remembers. If it leaks, the blast radius is the private state store, and
+      # replacing it is deleting one key and adding another — no re-enrolment,
+      # nothing to re-anchor.
+      #
+      # `ssh-key` makes actions/checkout configure the key and set an SSH remote,
+      # so the `git push` in "Commit the private state" needs nothing further.
       - name: Check out the private licence state
         if: vars.PRIVATE_STATE_REPO != ''
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
-          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
 
       - name: Point the state helpers at the private store
@@ -300,15 +310,25 @@ jobs:
       # `private_for` already redirects every write once PRIVATE_STATE_DIR is
       # set; this is where the workflow points it somewhere real.
       #
-      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
-      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
-      # write another.
+      # A deploy key rather than GITHUB_TOKEN, because GITHUB_TOKEN is scoped to
+      # THIS repository and can neither read nor write another. A PAT would also
+      # cross that boundary, and the first draft of this block asked for one —
+      # but a PAT is minted against an ACCOUNT, so its reach is whatever that
+      # account can touch, and the only human here administers three orgs. A
+      # write-enabled deploy key reaches exactly one repository, cannot be used
+      # for anything else, and has no expiry to renew on a schedule nobody
+      # remembers. If it leaks, the blast radius is the private state store, and
+      # replacing it is deleting one key and adding another — no re-enrolment,
+      # nothing to re-anchor.
+      #
+      # `ssh-key` makes actions/checkout configure the key and set an SSH remote,
+      # so the `git push` in "Commit the private state" needs nothing further.
       - name: Check out the private licence state
         if: vars.PRIVATE_STATE_REPO != ''
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
-          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
 
       - name: Point the state helpers at the private store
@@ -439,13 +459,13 @@ jobs:
 
       # INERT UNTIL CONFIGURED — `vars.PRIVATE_STATE_REPO` is unset today, so
       # every `if` below is false and the signing path is unchanged. See the
-      # publish job for why a PAT rather than GITHUB_TOKEN.
+      # publish job for why a deploy key rather than GITHUB_TOKEN or a PAT.
       - name: Check out the private licence state
         if: vars.PRIVATE_STATE_REPO != ''
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
-          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
 
       - name: Point the state helpers at the private store
