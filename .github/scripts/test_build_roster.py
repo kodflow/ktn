@@ -5,17 +5,33 @@ The roster is the only statement ktn-linter trusts. What it says about CI
 entitlement decides who gets a free seat, so the cases that matter here are the
 ones where an account should NOT appear.
 """
+import base64
 import importlib.util
 import json
 import os
 import pathlib
+import struct
 import tempfile
 import unittest
 
 SCRIPT = pathlib.Path(__file__).with_name("build_roster.py")
+GATE = pathlib.Path(__file__).with_name("parse_request.py")
 MAC = "eb56f295-9428-49b1-9dc3-0ebc6e383444"
 WIN = "11111111-2222-4333-8444-555555555555"
-PUBLIC_KEY = "ssh-ed25519 AAAAtestfixturenotarealkeyAA\n"
+
+
+def fixture_key(material: bytes = b"ktn test fixture key, not real!!") -> str:
+    """A structurally valid ssh-ed25519 line; see test_parse_request.py.
+
+    The fingerprint is taken from the decoded blob, so a fixture has to be a
+    real RFC 8709 key blob — and assembling it here rather than pasting one
+    keeps every line in this repository out of a secret scanner's sights.
+    """
+    blob = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", len(material)) + material
+    return "ssh-ed25519 " + base64.b64encode(blob).decode()
+
+
+PUBLIC_KEY = fixture_key() + "\n"
 
 
 def load_script():
@@ -46,7 +62,7 @@ class RosterTestCase(unittest.TestCase):
         """Publish a device's key, which is what makes it active."""
         (self.licenses / f"{uuid}.pub").write_text(PUBLIC_KEY)
 
-    def enrol(self, uuid, login="kodflow", account_id="133899878", term=None, published=True):
+    def enrol(self, uuid, login="a-holder", account_id="70000001", term=None, published=True):
         """Record a device the way the approval chain does."""
         owners_path = self.licenses / "owners.json"
         owners = json.loads(owners_path.read_text()) if owners_path.exists() else {}
@@ -85,7 +101,7 @@ class CIEntitlementTest(RosterTestCase):
         """The ordinary case: a licence with a published device covers its CI."""
         self.enrol(MAC, term="2027-03-01T00:00:00Z")
 
-        self.assertEqual(self.entitlements(), {"133899878": {"exp": "2027-03-01T00:00:00Z"}})
+        self.assertEqual(self.entitlements(), {"70000001": {"exp": "2027-03-01T00:00:00Z"}})
 
     def test_the_key_is_the_numeric_id_not_the_login(self):
         """A login can be renamed and a released one reclaimed by someone else.
@@ -93,10 +109,10 @@ class CIEntitlementTest(RosterTestCase):
         Matching a CI run on the name would turn a freed handle into a way in;
         GitHub does not reissue an account id.
         """
-        self.enrol(MAC, login="kodflow", account_id="42")
+        self.enrol(MAC, login="a-holder", account_id="42")
 
         self.assertIn("42", self.entitlements())
-        self.assertNotIn("kodflow", self.entitlements())
+        self.assertNotIn("a-holder", self.entitlements())
 
     def test_an_account_with_no_active_device_is_not_entitled(self):
         """A licence nobody uses should not keep handing out free CI.
@@ -121,7 +137,7 @@ class CIEntitlementTest(RosterTestCase):
 
     def test_one_account_does_not_entitle_another(self):
         """Entitlement follows the licence, and a licence is one account."""
-        self.enrol(MAC, login="kodflow", account_id="1")
+        self.enrol(MAC, login="a-holder", account_id="1")
         self.enrol(WIN, login="someone-else", account_id="2", published=False)
 
         self.assertEqual(list(self.entitlements()), ["1"])
@@ -130,7 +146,7 @@ class CIEntitlementTest(RosterTestCase):
         """CI expires exactly when the devices do — one licence, one date."""
         self.enrol(MAC, term="2028-12-31T00:00:00Z")
 
-        self.assertEqual(self.entitlements()["133899878"]["exp"], "2028-12-31T00:00:00Z")
+        self.assertEqual(self.entitlements()["70000001"]["exp"], "2028-12-31T00:00:00Z")
 
     def test_an_account_with_no_term_is_entitled_without_one(self):
         """A missing term reads as "none recorded", never as "already expired".
@@ -140,7 +156,7 @@ class CIEntitlementTest(RosterTestCase):
         """
         self.enrol(MAC, term=None)
 
-        self.assertEqual(self.entitlements(), {"133899878": {}})
+        self.assertEqual(self.entitlements(), {"70000001": {}})
 
 
 class RosterDocumentTest(RosterTestCase):
@@ -161,7 +177,7 @@ class RosterDocumentTest(RosterTestCase):
 
         roster = self.roster()
 
-        self.assertEqual(roster["ci"], {"133899878": {"exp": "2027-03-01T00:00:00Z"}})
+        self.assertEqual(roster["ci"], {"70000001": {"exp": "2027-03-01T00:00:00Z"}})
 
     def test_subjects_are_unaffected_by_the_ci_block(self):
         """The device path must not change shape because CI gained one."""
@@ -178,6 +194,52 @@ class RosterDocumentTest(RosterTestCase):
 
         self.assertEqual(roster["subjects"], {})
         self.assertNotIn("ci", roster)
+
+
+class UnusableKeyTest(RosterTestCase):
+    """One bad key on the branch must cost one device, never every signature."""
+
+    def test_a_key_that_will_not_decode_does_not_stop_the_build(self):
+        """THE defect: this raised, and the raise took the roster with it.
+
+        No roster means no signature, and no signature means the whole parc
+        stops inside 24 hours — over a single malformed file that only one
+        device depends on.
+        """
+        self.enrol(MAC)
+        (self.licenses / f"{WIN}.pub").write_text("ssh-ed25519 AAAAB3NzaC1lZDI1NTE5AAAAIA\n")
+
+        roster = self.roster()
+
+        self.assertIn(MAC, roster["subjects"])
+        self.assertNotIn(WIN, roster["subjects"])
+
+    def test_a_key_that_is_only_shaped_like_one_is_omitted(self):
+        """The quiet half: b64decode discards what it does not recognise.
+
+        The subject used to be published with a fingerprint computed over
+        whatever survived that — matching no device, and saying nothing.
+        """
+        self.enrol(MAC)
+        (self.licenses / f"{WIN}.pub").write_text("ssh-ed25519 AAAAtestfixturenotarealkeyAA\n")
+
+        self.assertNotIn(WIN, self.roster()["subjects"])
+
+    def test_a_key_the_gate_accepts_is_one_this_can_fingerprint(self):
+        """The two scripts must agree, or a published key is a dead subject.
+
+        parse_request.py decides what reaches the branch; this decides what
+        reaches the roster. A key accepted there and unreadable here is the
+        shape of the outage above.
+        """
+        spec = importlib.util.spec_from_file_location("parse_request", GATE)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        line = fixture_key()
+
+        gate.validate_ed25519(line)
+
+        self.assertTrue(self.module.fingerprint(line).startswith("SHA256:"))
 
 
 if __name__ == "__main__":

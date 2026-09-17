@@ -85,6 +85,15 @@ concurrency:
   # re-applied; there is no silent partial state, only a missing one.
   group: licence-roster
   cancel-in-progress: false
+  # Up to 100 runs may wait instead of one, processed first-in first-out. This
+  # narrows the window in which a burst drops a decision; it does not close it
+  # — the 101st waiting run is still discarded, and a dropped REVOCATION is
+  # silent because nobody is waiting for it. The reconciliation step in `sign`
+  # is the correction; this is only the mitigation.
+  #
+  # Incompatible with cancel-in-progress: true, which is not wanted here
+  # anyway: killing a run mid-push is what the false above prevents.
+  queue: max
 
 jobs:
   dedupe:
@@ -147,11 +156,41 @@ jobs:
           ref: licenses
           path: state
 
+      # INERT UNTIL CONFIGURED. `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` in this block is false and nothing below changes — which is
+      # the property that lets this ship before the store exists.
+      #
+      # The commercial half of the licence state — which accounts are
+      # customers, when each term ends, who negotiated extra seats, which login
+      # holds which device — has no business on a public branch. state.py's
+      # `private_for` already redirects every write once PRIVATE_STATE_DIR is
+      # set; this is where the workflow points it somewhere real.
+      #
+      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
+      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
+      # write another.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
+
       - name: Extract and validate the request
         id: request
         env:
           BODY: ${{ github.event.issue.body }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          # The identity the chain actually decides on. A login can be released
+          # and re-registered by somebody else; an id is never reissued. Passed
+          # here as well as to record_owner.py so a recycled handle is refused
+          # at the gate rather than detected after the state is written.
+          AUTHOR_ID: ${{ github.event.issue.user.id }}
           LICENSES_DIR: state
         run: python3 .github/scripts/parse_request.py
 
@@ -164,18 +203,59 @@ jobs:
           # so matching CI entitlement on the name would make a freed handle a
           # way in. GitHub does not reissue an id.
           AUTHOR_ID: ${{ github.event.issue.user.id }}
+          # Recorded with the enrolment so a later decision on this issue can be
+          # resolved from state we wrote, never from the issue body — which the
+          # requester can still edit after the label lands.
+          ISSUE: ${{ github.event.issue.number }}
           # The full current label set, not just the one that triggered this
           # run: an expireAt: label only counts if it landed before (or with)
-          # license:approved.
+          # license:approved. record_owner.py reads the same set for a
+          # ciOwner: label, which is how a maintainer says who a CI seat is
+          # for when that is not the requester.
           LABELS_JSON: ${{ toJSON(github.event.issue.labels) }}
+          # What the request ASKED for as its CI owner, already shape-checked.
+          # A claim, never a grant: AUTHOR_ID above is the requester, and for
+          # an organisation customer the two are different accounts. Recording
+          # them separately is what stops a CI entitlement being published
+          # against an id no runner will ever present.
+          CI_OWNER: ${{ steps.request.outputs.ci_owner }}
           LICENSES_DIR: state
         run: |
           set -euo pipefail
           mkdir -p state
           mv /tmp/subject.pub "state/${UUID}.pub"
-          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}"
+          python3 .github/scripts/record_owner.py "${UUID}" "${AUTHOR}" "${AUTHOR_ID}" "${ISSUE}" "${CI_OWNER}"
           python3 .github/scripts/record_expiry.py "${UUID}"
 
+      # THE PRIVATE HALF FIRST, and the order is the whole point.
+      #
+      # The public branch carries <uuid>.pub, which is the AUTHORISATION: the
+      # signer builds the roster from the published keys. The private store
+      # carries what BOUNDS it — the owner binding, the term, the quota. With
+      # the public push first, a failure here published a key with no record
+      # of who holds it or when it ends: a device authorised by a roster that
+      # cannot say what limits it, healing only if somebody noticed.
+      #
+      # Reversed, the same failure leaves an owner binding with no published
+      # key. Nothing is authorised, nobody is affected, and the next approval
+      # of that issue completes it. Never publish an authorisation before the
+      # record that bounds it.
+      #
+      # `git diff --quiet` guards a no-op: most runs write nothing private,
+      # and a schedule must not fail over having had nothing to say.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: record the publication"
+          git push
+
+      # After the private half, so a key is never published ahead of the
+      # record that bounds it. See the step above.
       - name: Commit
         working-directory: state
         env:
@@ -210,10 +290,49 @@ jobs:
           ref: licenses
           path: state
 
+      # INERT UNTIL CONFIGURED. `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` in this block is false and nothing below changes — which is
+      # the property that lets this ship before the store exists.
+      #
+      # The commercial half of the licence state — which accounts are
+      # customers, when each term ends, who negotiated extra seats, which login
+      # holds which device — has no business on a public branch. state.py's
+      # `private_for` already redirects every write once PRIVATE_STATE_DIR is
+      # set; this is where the workflow points it somewhere real.
+      #
+      # A PAT rather than GITHUB_TOKEN, for the same reason the linter's mirror
+      # needs one: GITHUB_TOKEN is scoped to THIS repository and cannot read or
+      # write another.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
+
       - name: Resolve the subject
         id: subject
         env:
+          # enrolments.json is consulted first and the body is not read at all
+          # when the issue is recorded there. The body remains the only source
+          # for a device enrolled before that file existed, and is then
+          # cross-checked against owners.json — an edited body can at worst
+          # revoke a device the same account already owns.
+          ISSUE: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          # Ownership is confirmed by NUMERIC account id when the binding
+          # carries one. A login comparison is what a released handle defeats:
+          # whoever registers it next passes the check for every device the
+          # previous holder still has published, and revoking someone else's
+          # working licence needs no escalation to hurt.
+          AUTHOR_ID: ${{ github.event.issue.user.id }}
           BODY: ${{ github.event.issue.body }}
+          LICENSES_DIR: state
         run: python3 .github/scripts/revoke_subject.py
 
       - name: Remove the public key
@@ -232,6 +351,20 @@ jobs:
           git diff --cached --quiet || git commit -m "licence: revoke ${UUID}"
           git push origin HEAD:licenses
 
+      # The private half is a separate repository, so it needs its own commit.
+      # `git diff --quiet` guards a no-op: most runs write nothing private, and
+      # a schedule must not fail over having had nothing to say.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: record the revocation"
+          git push
+
       - name: Note the revocation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -242,33 +375,33 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'repository_dispatch'
     steps:
+      - name: Checkout the scripts
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
       - name: Checkout the licence state
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           ref: licenses
           path: state
 
+      # The floor is validated as SemVer and only ever moves FORWARD.
+      # repository_dispatch is fire-and-forget: two releases in quick
+      # succession, a retried delivery or a replayed payload arrive in an order
+      # that is not the order they were released in, and the last writer used
+      # to win unconditionally. A floor going backwards silently un-mandates an
+      # update that was already mandatory.
       - name: Write the floor
+        env:
+          VERSION: ${{ github.event.client_payload.version }}
+          LICENSES_DIR: state
+        run: python3 .github/scripts/record_version.py
+
+      - name: Commit the floor
         working-directory: state
         env:
           VERSION: ${{ github.event.client_payload.version }}
         run: |
           set -euo pipefail
-          # A dispatch without a version would blank the floor and silently
-          # disable mandatory updates, which is the failure nobody notices.
-          if [ -z "${VERSION}" ]; then
-            echo "::error::release-published carried no version — refusing to clear the floor."
-            exit 1
-          fi
-          # Shape check: the floor is compared with SemVer, and a malformed
-          # value fails open on every client. Catch it here, where it is one
-          # workflow run, rather than there, where it is silent.
-          if ! printf '%s' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::${VERSION} is not a SemVer tag — refusing to publish an unusable floor."
-            exit 1
-          fi
-          printf '%s\n' "${VERSION}" > required-version.txt
-
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add required-version.txt
@@ -304,6 +437,74 @@ jobs:
           ref: licenses
           path: state
 
+      # INERT UNTIL CONFIGURED — `vars.PRIVATE_STATE_REPO` is unset today, so
+      # every `if` below is false and the signing path is unchanged. See the
+      # publish job for why a PAT rather than GITHUB_TOKEN.
+      - name: Check out the private licence state
+        if: vars.PRIVATE_STATE_REPO != ''
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: ${{ vars.PRIVATE_STATE_REPO }}
+          token: ${{ secrets.PRIVATE_STATE_TOKEN }}
+          path: private
+
+      - name: Point the state helpers at the private store
+        if: vars.PRIVATE_STATE_REPO != ''
+        run: echo "PRIVATE_STATE_DIR=${GITHUB_WORKSPACE}/private" >> "$GITHUB_ENV"
+
+      # Reported, never enforced. Licence state is keyed by numeric account id
+      # now; a branch still carrying login-keyed files is READ through the
+      # fallback in state.py, so an un-migrated state cannot stop a signature —
+      # an unsigned roster blocks every client within 24 hours, which is far
+      # worse than a stale key scheme. `|| true` is therefore deliberate: this
+      # step exists to make the remaining work visible on every run, and an
+      # account nobody has resolved yet must not take the parc offline.
+      - name: Report whether any state is still keyed by login
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/migrate_state_keys.py --check || true
+
+      # This repository is PUBLIC and this branch is where licence state
+      # lives, so anything written here is published. The signed roster has to
+      # be — every client fetches it unauthenticated — but which accounts are
+      # customers, when each term ends and who negotiated extra seats do not.
+      #
+      # Not a gate while PRIVATE_STATE_DIR is unset: that is the state of the
+      # world today, and failing every signature over it would stop the parc
+      # to protest a condition the run cannot fix. It BECOMES a gate the moment
+      # a private store is configured, because a half-finished cutover reads as
+      # a finished one from the configuration alone. Hence no `|| true`.
+      #
+      # It runs BEFORE the candidate is staged, so its roster-trio check
+      # tolerates a branch that has never published — a branch with no
+      # subjects has nothing to serve, and refusing here killed the job before
+      # it could build the first roster, which made a fresh `licenses` branch
+      # impossible to bootstrap at all. The strict form of that check runs
+      # after publication, where absence can only mean a run that produced
+      # nothing.
+      # BEFORE the audit, and that order is the entire safety property.
+      #
+      # PRIVATE_STATE_DIR redirects every NEW write; nothing moved what was
+      # already public. So configuring a store used to mean: old files stay
+      # public, the audit below BECOMES a gate and fails, this job dies before
+      # building a roster, and every client refuses to run within 24 hours.
+      # Setting one variable would have taken the estate down.
+      #
+      # Running the move here makes the cutover achievable on the first
+      # scheduled run after the variable is set, with no operator step. It is
+      # idempotent, so every later run is a no-op that prints one line.
+      - name: Move the commercial half off the public branch
+        if: vars.PRIVATE_STATE_REPO != ''
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/migrate_private_state.py
+
+      - name: Report what the public branch discloses
+        env:
+          LICENSES_DIR: state
+          PRIVATE_STATE_DIR: ${{ vars.PRIVATE_STATE_DIR }}
+        run: python3 .github/scripts/audit_public_state.py
+
       # Checked BEFORE rebuilding: this reads the roster about to be replaced,
       # which is the only moment its remaining life is still observable.
       - name: Check how much life the previous roster had left
@@ -312,47 +513,186 @@ jobs:
           LICENSES_DIR: state
         run: python3 .github/scripts/check_freshness.py
 
+      # A decision that never reached the branch cannot be seen from the
+      # branch, and that asymmetry is the danger: a dropped APPROVAL has a
+      # customer asking about it, a dropped REVOCATION has nobody. The schedule
+      # would keep signing fresh, valid rosters that authorise a device a
+      # maintainer withdrew, for as long as that licence's term runs.
+      #
+      # So every signing run reconciles the decisions a maintainer took against
+      # what was published, before it builds the roster it is about to sign.
+      # Identity is the label event id, order is that event's timestamp, and
+      # the outcome is recorded in decisions.jsonl so nothing is judged twice.
+      - name: Reconcile the decisions taken with what was published
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LICENSES_DIR: state
+        run: |
+          set -euo pipefail
+          tmp="${RUNNER_TEMP:-/tmp}"
+          events="${tmp}/label-events.jsonl"
+          : > "${events}"
+
+          # THE REPOSITORY'S OWN EVENT HISTORY, not its current labels.
+          #
+          # This filtered issues by the labels they carry NOW and then read
+          # each one's events. A decision's identity is its label EVENT — a
+          # maintainer is the only one who can produce one and nobody can edit
+          # one — but the discovery in front of it depended on mutable state:
+          # remove both licence labels from an issue whose revocation push was
+          # lost, and that issue disappears from every future scan. withdraw()
+          # is then never reached and the device stays in the signed roster,
+          # for ever, with nothing reporting it. A lost APPROVAL has a customer
+          # asking about it; a lost REVOCATION has nobody.
+          #
+          # /issues/events is repo-wide and immutable: it carries every label
+          # event with the issue it belongs to, whatever that issue looks like
+          # today. Its cost follows ACTIVITY rather than history, which is what
+          # the comment this replaces already recommended for a different
+          # reason (the per-issue fan-out).
+          #
+          # `--paginate` without `--slurp` emits each page separately, so --jq
+          # runs per page. The issue number comes from the event itself here,
+          # so nothing has to be injected — and pull requests carry no licence
+          # label, so no `.pull_request` filter is needed either.
+          gh api --paginate "/repos/${REPO}/issues/events?per_page=100" --jq '
+            .[] | select(.event == "labeled")
+                | select(.label.name == "license:approved" or .label.name == "license:revoked")
+                | {id: .id, created_at: .created_at, label: .label.name,
+                   issue: .issue.number}' >> "${events}"
+          echo "reconciling $(wc -l < "${events}") licence decision(s) from the repository's event history"
+
+          python3 .github/scripts/reconcile_decisions.py "${events}"
+
+      # The private half is a separate repository and needs its own commit.
+      # Placed before the reconciliation push so that if the public push fails,
+      # the private move is already durable rather than repeated next run
+      # against a branch that has since moved.
+      - name: Commit the private state
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "licence: move the commercial half off the public branch"
+          git push
+
+      - name: Commit the reconciliation
+        working-directory: state
+        env:
+          APPLIED: ${{ steps.reconcile.outputs.applied }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          message="licence: record decisions"
+          if [ "${APPLIED}" != "0" ]; then
+            message="licence: apply ${APPLIED} decision(s) that had not landed"
+          fi
+          # The ledger only grows when a decision is new, so most runs commit
+          # nothing here. That is the healthy case, not a failure.
+          git diff --cached --quiet || git commit -m "${message}"
+          git push origin HEAD:licenses
+
+      # Everything from here to the promotion happens in a scratch directory.
+      # Nothing writes into state/ until a candidate has been signed AND
+      # verified in this run.
+      #
+      # Building in place is what made a keyless run dangerous: it left a NEW
+      # roster.json beside the PREVIOUS run's roster.json.sig, and the steps
+      # that followed tested only that a .sig existed. A clean candidate
+      # directory has nothing to inherit.
+      # required_version's docstring states the invariant: the mirror is synced
+      # first and the floor recorded second, "so a floor never demands a
+      # version nobody can download". That ordering is a convention of the
+      # caller and nothing checked it — record_version.py accepts any
+      # well-formed SemVer tag from a repository_dispatch, so a manual
+      # dispatch, a replayed delivery, or a mirror sync that failed after
+      # dispatching all record a floor for a version that was never published.
+      #
+      # The cost is the whole estate at once: every client reads a floor it
+      # cannot meet, upgrades, finds nothing higher, and the anti-loop guard
+      # turns that into a refusal rather than a loop. Before signing is the
+      # last moment it can be caught.
+      #
+      # An unreachable release list WARNS and continues, deliberately: the
+      # roster this step would block is the one keeping every client alive, and
+      # refusing here would turn GitHub's outage into ours.
+      - name: Check the floor against a published release
+        env:
+          LICENSES_DIR: state
+          MIRROR_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/check_version_floor.py
+
+      - name: Stage a clean candidate directory
+        id: candidate
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/roster-candidate.XXXXXX")"
+          echo "dir=${dir}" >> "$GITHUB_OUTPUT"
+
       - name: Build the roster
         env:
           LICENSES_DIR: state
+          CANDIDATE_DIR: ${{ steps.candidate.outputs.dir }}
         run: python3 .github/scripts/build_roster.py
 
-      - name: Sign it
+      - name: Sign it, verify it, and record that this run did both
         env:
           SIGNING_KEY: ${{ secrets.VENDOR_SIGNING_KEY }}
+          CANDIDATE_DIR: ${{ steps.candidate.outputs.dir }}
         run: |
           set -euo pipefail
-          # An unsigned roster would authorize nobody, so publishing one is
-          # pointless; but failing hourly until the key is provisioned trains
-          # everyone to ignore this workflow. Skip loudly instead.
+          # A missing key is a hard failure, not a warning. This used to
+          # `exit 0`: the rebuilt roster was left unsigned, the steps below
+          # found the previous run's signature in the checkout, and the
+          # mismatched pair was bundled and pushed. No unauthorised access —
+          # but every client reported the roster as FORGED while this workflow
+          # reported success. Failing keeps the last valid artefact serving out
+          # its window and says exactly what to do about it.
           if [ -z "${SIGNING_KEY}" ]; then
-            echo "::warning::VENDOR_SIGNING_KEY is unset — roster built but left unsigned."
-            exit 0
+            echo "::error::VENDOR_SIGNING_KEY is unset — refusing to publish. The roster already on the branch keeps serving until its window closes; provision the secret and re-run."
+            exit 1
           fi
-          printf '%s' "${SIGNING_KEY}" > /tmp/vendor.pem
-          chmod 600 /tmp/vendor.pem
+
+          # The private half never reaches a log: this step has no `set -x`,
+          # the value is only ever redirected into a file, and that file lives
+          # in a 0700 directory removed on the way out however this step ends.
+          keydir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/vendor.XXXXXX")"
+          chmod 700 "${keydir}"
+          trap 'rm -rf "${keydir}"' EXIT
+          printf '%s' "${SIGNING_KEY}" > "${keydir}/vendor.pem"
+          chmod 600 "${keydir}/vendor.pem"
+
           # Ed25519 signs the message directly; -rawin is what selects that
           # mode rather than pre-hashing, and it must match what the binary
           # verifies.
-          openssl pkeyutl -sign -rawin -inkey /tmp/vendor.pem \
-            -in state/roster.json -out state/roster.json.sig
-          rm -f /tmp/vendor.pem
+          openssl pkeyutl -sign -rawin -inkey "${keydir}/vendor.pem" \
+            -in "${CANDIDATE_DIR}/roster.json" -out "${CANDIDATE_DIR}/roster.json.sig"
 
-          # Verify what was just produced, before publishing it. A signature
-          # the binary would reject is worse than none: it publishes cleanly,
-          # every client refuses, and this workflow still reports success —
+          # Verify what was just produced, before anything publishes it. A
+          # signature the binary would reject is worse than none: it publishes
+          # cleanly, every client refuses, and the run still reports success —
           # which is exactly how a silent outage lasts a day and a half.
           #
-          # The private half is re-written to a real file rather than passed
-          # through a process substitution: openssl reads some key formats
-          # with seeks, and a pipe cannot be rewound.
-          printf '%s' "${SIGNING_KEY}" > /tmp/vendor-verify.pem
-          chmod 600 /tmp/vendor-verify.pem
-          openssl pkey -in /tmp/vendor-verify.pem -pubout -out /tmp/vendor.pub
-          rm -f /tmp/vendor-verify.pem
-          openssl pkeyutl -verify -rawin -pubin -inkey /tmp/vendor.pub \
-            -in state/roster.json -sigfile state/roster.json.sig
-          rm -f /tmp/vendor.pub
+          # The public half is derived from the private one here rather than
+          # read from the tree being published: a key taken from that tree
+          # would verify whatever the tree says.
+          openssl pkey -in "${keydir}/vendor.pem" -pubout -out "${keydir}/vendor.pub"
+          openssl pkeyutl -verify -rawin -pubin -inkey "${keydir}/vendor.pub" \
+            -in "${CANDIDATE_DIR}/roster.json" -sigfile "${CANDIDATE_DIR}/roster.json.sig"
+
+          # Written by the step that verified, over the bytes it verified.
+          # promote_roster.py publishes nothing without this receipt naming
+          # this run, so "a .sig exists" can never again stand in for "we
+          # signed this".
+          python3 .github/scripts/attest_candidate.py
 
       # Clients fetch ONE document. Two objects cannot be fetched atomically:
       # raw.githubusercontent.com caches each with max-age=300, so for up to
@@ -360,13 +700,33 @@ jobs:
       # signature over an old roster — indistinguishable from forgery, and
       # with hourly signing that is roughly 8% of all wall-clock time.
       - name: Bundle the signed pair
-        if: hashFiles('state/roster.json.sig') != ''
         env:
-          LICENSES_DIR: state
+          CANDIDATE_DIR: ${{ steps.candidate.outputs.dir }}
         run: python3 .github/scripts/bundle_roster.py
 
+      # The only step that writes into the published tree. It refuses unless
+      # the signature was created and verified in THIS run, the bundle carries
+      # exactly those bytes, the artefact is small enough for the client to
+      # accept, and the window is still open — and on refusal the previously
+      # published roster is left untouched.
+      - name: Publish the candidate, or nothing
+        env:
+          LICENSES_DIR: state
+          CANDIDATE_DIR: ${{ steps.candidate.outputs.dir }}
+        run: python3 .github/scripts/promote_roster.py
+
+      # The other half of the bootstrap tolerance above, and the reason it is
+      # safe. Before this point an absent roster can mean "this branch has not
+      # published yet"; after promote_roster.py has run it can only mean the
+      # publishing run produced nothing, so absence is an error with no
+      # exceptions. Placed before the commit so a tree that should not be
+      # pushed is not pushed.
+      - name: Verify the published trio is actually there
+        env:
+          LICENSES_DIR: state
+        run: python3 .github/scripts/audit_public_state.py --require-artefacts
+
       - name: Commit the signed pair
-        if: hashFiles('state/roster.json.sig') != ''
         working-directory: state
         run: |
           set -euo pipefail
@@ -379,6 +739,28 @@ jobs:
           # moved enough to matter; do not fail the schedule over it.
           git diff --cached --quiet || git commit -m "licence: re-sign roster"
           git push origin HEAD:licenses
+
+      # Reported, not replayed: publishing needs the key from the issue body,
+      # and a body can have changed since the label landed. Re-applying the
+      # label is a maintainer looking at the request as it stands now.
+      - name: Say which decisions still need a maintainer
+        if: always() && steps.reconcile.outputs.attention == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ steps.reconcile.outputs.report }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title licence: decisions did not land" --json number \
+            --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${{ github.repository }}" \
+              --body-file "${REPORT}"
+            exit 0
+          fi
+          gh issue create --repo "${{ github.repository }}" \
+            --title "licence: decisions did not land" \
+            --body-file "${REPORT}"
 
       # A roster that got this close to expiring means signatures have been
       # missing for most of a day. Say so loudly: the outage this repository

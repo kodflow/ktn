@@ -24,8 +24,18 @@ def licenses_dir() -> pathlib.Path:
     return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
 
 
+def candidate_dir() -> pathlib.Path:
+    """Where the unpublished candidate is staged; see build_roster.py.
+
+    The bundle is assembled from the candidate, never from the published tree:
+    reading the published tree is how a roster built in one run came to be
+    paired with a signature produced by an earlier one.
+    """
+    return pathlib.Path(os.environ.get("CANDIDATE_DIR") or licenses_dir())
+
+
 def main() -> None:
-    state = licenses_dir()
+    state = candidate_dir()
     roster = (state / "roster.json").read_bytes()
     signature = (state / "roster.json.sig").read_bytes()
 

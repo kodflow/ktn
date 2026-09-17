@@ -9,23 +9,39 @@ licence's term and does not move on re-signature.
 """
 import os
 import base64
+import binascii
 import datetime
 import hashlib
 import json
 import pathlib
+import struct
+import sys
+
+# state.py owns where licence state lives and how it is keyed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import state  # noqa: E402  (the path has to be set before this can resolve)
 
 
 def licenses_dir() -> pathlib.Path:
-    """Where licence state lives.
+    """Where licence state lives; see state.licenses_dir."""
+    return state.licenses_dir()
 
-    Defaults to ``licenses/`` so the scripts stay runnable from a plain
-    checkout of ``main``. The workflow overrides it with ``LICENSES_DIR``
-    because the state now lives on its own branch, checked out into a
-    separate directory: ``main`` carries a required-status ruleset that
-    refuses a direct push, which silently stopped every re-signature for a
-    day and a half until the roster's window closed.
+
+def candidate_dir() -> pathlib.Path:
+    """Where the roster being built is written, which is NOT where state lives.
+
+    The signing job stages its work in a scratch directory, and only a
+    candidate whose signature was created AND verified in the same run is
+    copied into the published tree — see promote_roster.py. Building in place
+    is what let a run with no signing key leave a NEW roster.json beside the
+    PREVIOUS roster.json.sig: the steps after it tested only that a .sig
+    existed, so they bundled and pushed that mismatched pair, and every client
+    then reported the roster as forged.
+
+    Defaults to the state directory so a hand-run from a plain checkout keeps
+    behaving as it always did.
     """
-    return pathlib.Path(os.environ.get("LICENSES_DIR", "licenses"))
+    return pathlib.Path(os.environ.get("CANDIDATE_DIR") or licenses_dir())
 
 # Must match RosterLifetime in pkg/license. Widening it here without widening
 # it there would publish a roster the binary refuses; the reverse would leave
@@ -33,10 +49,51 @@ def licenses_dir() -> pathlib.Path:
 LIFETIME_HOURS = 24
 
 
+# RFC 8709 wire format, checked here as well as at the gate. The two exist for
+# different reasons: parse_request.py refuses a bad key so it never reaches the
+# branch, and this refuses to be stopped by one that did anyway — a hand edit,
+# or a key published before that validation existed.
+ED25519_ALGORITHM = b"ssh-ed25519"
+ED25519_KEY_BYTES = 32
+
+
+def ed25519_blob(line: str) -> bytes:
+    """Decode an authorized-keys line strictly, or raise ValueError.
+
+    `base64.b64decode` without validate=True DISCARDS characters it does not
+    recognise, so a corrupt blob used to be fingerprinted as whatever it
+    happened to decode to — a subject nothing would ever match, published with
+    no complaint. Bad padding was the louder half: it raised, and the exception
+    took the whole roster with it. One unreadable key must not be able to stop
+    every signature.
+    """
+    parts = line.split()
+    if len(parts) < 2:
+        raise ValueError("not an authorized-keys line")
+    blob = base64.b64decode(parts[1], validate=True)
+    offset = 0
+    fields = []
+    for _ in range(2):
+        if offset + 4 > len(blob):
+            raise ValueError("truncated length prefix")
+        (length,) = struct.unpack(">I", blob[offset : offset + 4])
+        end = offset + 4 + length
+        if end > len(blob):
+            raise ValueError("length prefix runs past the blob")
+        fields.append(blob[offset + 4 : end])
+        offset = end
+    if fields[0] != ED25519_ALGORITHM:
+        raise ValueError(f"blob declares {fields[0]!r}, not {ED25519_ALGORITHM!r}")
+    if len(fields[1]) != ED25519_KEY_BYTES:
+        raise ValueError(f"{len(fields[1])} bytes of key material, not {ED25519_KEY_BYTES}")
+    if offset != len(blob):
+        raise ValueError("trailing bytes after the key material")
+    return blob
+
+
 def fingerprint(line: str) -> str:
     """Render the SHA256 fingerprint exactly as ssh.FingerprintSHA256 does."""
-    blob = base64.b64decode(line.split()[1])
-    digest = hashlib.sha256(blob).digest()
+    digest = hashlib.sha256(ed25519_blob(line)).digest()
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
@@ -73,13 +130,57 @@ def required_version(state_dir: pathlib.Path) -> str:
     return path.read_text().strip()
 
 
+def ci_beneficiary(ci_owners: dict, account_id: str) -> str:
+    """Whose repositories this licence's CI covers, or "" when nobody decided.
+
+    A CI run does not present the requester's id. It presents
+    ``repository_owner_id`` — the owner of the repository the run is in. For an
+    individual linting their own repositories that is the same number as the
+    account that opened the licence request, and keying CI on the requester was
+    right by coincidence. For a customer whose repositories belong to an
+    ORGANISATION it is a different number, so the entitlement was published
+    against an id no run would ever carry: a licence that looked issued, a CI
+    job that failed its licence check, and no error anywhere naming the cause.
+
+    So the beneficiary is now a recorded field and "" is a real answer. An
+    unresolved claim yields no entitlement rather than a wrong one, because a
+    missing entitlement is a question a customer asks and a never-matching one
+    is a question nobody knows to ask.
+    """
+    entry = ci_owners.get(str(account_id), {})
+    beneficiary = str(entry.get("beneficiary", "") or "")
+    if beneficiary:
+        # A non-numeric beneficiary cannot be what a token carries, so it would
+        # be published as an entitlement that never matches — the exact failure
+        # this field exists to end.
+        if not beneficiary.isdigit():
+            print(
+                f"::error::ci-owners.json records a non-numeric CI beneficiary "
+                f"{beneficiary!r} for account {account_id}; a CI run is matched on a numeric "
+                "owner id, so this entitlement is omitted rather than published unmatched."
+            )
+            return ""
+        return beneficiary
+    if entry.get("claimed"):
+        print(
+            f"::warning::account {account_id} asked for CI under {entry['claimed']!r} and no "
+            "maintainer has resolved it, so it gets no CI entitlement. Its devices are "
+            "unaffected. Apply `ciOwner:<numeric-id>` to grant the organisation, or "
+            "`ciOwner:self` to grant the requester, on any approval for this account."
+        )
+        return ""
+    # Nothing claimed and nothing decided: the beneficiary is the requester.
+    # Unchanged behaviour, and the correct one for a personal account.
+    return str(account_id)
+
+
 def ci_entitlements(state_dir: pathlib.Path) -> dict:
     """Which accounts a CI run may be authorised for, and until when.
 
-    Keyed by the account's NUMERIC id, never its login. A login can be renamed,
-    and a released one can be claimed by somebody else — matching a CI run on
-    the name would turn a freed handle into a way in. GitHub does not reissue
-    an id.
+    Keyed by the BENEFICIARY's numeric id, never a login. A login can be
+    renamed, and a released one can be claimed by somebody else — matching a CI
+    run on the name would turn a freed handle into a way in. GitHub does not
+    reissue an id.
 
     An account appears only while it still has a published device. A licence
     with no active device is not a licence anyone is using, and its CI should
@@ -87,38 +188,78 @@ def ci_entitlements(state_dir: pathlib.Path) -> dict:
 
     The term is the licence's own, so CI expires exactly when the devices do.
     """
-    accounts_path = state_dir / "accounts.json"
-    owners_path = state_dir / "owners.json"
-    licences_path = state_dir / "licences.json"
-    # No accounts file means no account id was ever captured, which is how
-    # every licence issued before this existed looks. They keep working; they
-    # simply get no CI seat until their next approval records an id.
-    if not (accounts_path.exists() and owners_path.exists()):
-        return {}
+    ci_owners_path = state_dir / "ci-owners.json"
+    # Absent for every account that never named one, which is most of them.
+    ci_owners = json.loads(ci_owners_path.read_text() or "{}") if ci_owners_path.exists() else {}
 
-    accounts = json.loads(accounts_path.read_text() or "{}")
-    owners = json.loads(owners_path.read_text() or "{}")
-    licences = json.loads(licences_path.read_text() or "{}") if licences_path.exists() else {}
-
+    # Iterated from the BINDINGS rather than from accounts.json, because the
+    # binding is what says an account has a device and the directory is only
+    # the login→id map. state.device_owners merges the id-keyed file over the
+    # login-keyed one, so an un-migrated branch still produces entitlements
+    # and the roster stays signable through the migration.
     entitled = {}
-    for login, record in accounts.items():
-        account_id = record.get("id")
-        if not account_id:
+    for account_key in sorted(set(state.device_owners(state_dir).values())):
+        # An account with no numeric id behind it cannot have a CI seat: there
+        # is no id to match `repository_owner_id` against, and inventing one —
+        # or falling back to the login — would defeat the reason the id is
+        # used. Its devices are unaffected.
+        if not state.is_resolved(account_key):
             continue
         # A published key is what makes a device active — the same rule the
-        # seat count uses, and for the same reason: owners.json deliberately
-        # keeps revoked bindings so an identity cannot be squatted afterwards.
-        active = any(
-            owner == login and (state_dir / f"{uuid}.pub").is_file()
-            for uuid, owner in owners.items()
-        )
-        if not active:
+        # seat count uses, and for the same reason: the bindings deliberately
+        # survive revocation so an identity cannot be squatted afterwards.
+        if not state.active_devices(state_dir, account_key):
+            continue
+        beneficiary = ci_beneficiary(ci_owners, account_key)
+        if not beneficiary:
             continue
         entry = {}
-        expires_at = licences.get(login, {}).get("expiresAt")
-        if expires_at:
+        expires_at = state.account_term(state_dir, account_key)
+        #: `and expires_at` used to stand here, which is precisely the
+        #: truthiness test the ABSENT sentinel exists to make unnecessary.
+        #: account_term's own doc says why: "A recorded null, 0, false or "" is
+        #: a CORRUPT entry, and reading one as absent would... hand it a fresh
+        #: year". Here it did worse than that — it emitted the CI entitlement
+        #: with NO exp at all, and a client reads a missing exp as no recorded
+        #: end. A bad edit became an unbounded automation right.
+        if expires_at is not state.ABSENT:
+            #: Present, so it must be usable. A corrupt term REMOVES the CI
+            #: entitlement rather than publishing it unbounded: losing CI until
+            #: somebody fixes the entry is visible and recoverable, and an
+            #: automation right with no end is neither.
+            if state.instant(expires_at) is None:
+                print(
+                    f"::warning::account {account_key} has a recorded CI term that is not an "
+                    f"instant ({expires_at!r}), so no CI entitlement is published for it. "
+                    "Publishing it without an expiry would be an automation right that never "
+                    "ends; fix the entry in account-terms.json."
+                )
+
+                continue
             entry["exp"] = expires_at
-        entitled[str(account_id)] = entry
+        # Two licences can legitimately name the same beneficiary — two members
+        # of one organisation, each with their own devices. The owner is covered
+        # while EITHER licence is live, so the later term wins; silently keeping
+        # whichever account was iterated last would have made the answer depend
+        # on dictionary order. Said out loud because two licences pointing at
+        # one owner is also what a duplicate sale looks like.
+        existing = entitled.get(beneficiary)
+        if existing is not None:
+            print(
+                f"::warning::more than one licence names account {beneficiary} as its CI "
+                "beneficiary; CI is covered while any of them is live, so the latest term "
+                "is published. Check this is not a licence sold twice."
+            )
+            # A missing "exp" is the client's "no term recorded", which it
+            # reads as no expiry — the widest entry there is, so it must sort
+            # LAST rather than compare as an empty string and lose to a date.
+            def reach(value: dict) -> tuple:
+                """Order terms so an absent one is the furthest away."""
+                return (1, "") if "exp" not in value else (0, value["exp"])
+
+            if reach(existing) >= reach(entry):
+                continue
+        entitled[beneficiary] = entry
     return entitled
 
 
@@ -128,11 +269,21 @@ def main() -> None:
     # the hourly schedule must still succeed with zero subjects instead of
     # crashing on a missing parent directory.
     licenses_path.mkdir(parents=True, exist_ok=True)
+    out_path = candidate_dir()
+    out_path.mkdir(parents=True, exist_ok=True)
 
-    subjects = {
-        pub.stem: subject_value(pub, licenses_path)
-        for pub in sorted(licenses_path.glob("*.pub"))
-    }
+    subjects, unreadable = {}, []
+    for pub in sorted(licenses_path.glob("*.pub")):
+        try:
+            subjects[pub.stem] = subject_value(pub, licenses_path)
+        except (binascii.Error, ValueError) as problem:
+            # Loud, and survivable. Publishing this subject is impossible —
+            # there is no fingerprint to publish — but stopping here would
+            # withhold the roster from every other subject too, and a roster
+            # that is not re-signed blocks the whole parc within 24 hours. One
+            # device fails; the rest keep working and the log says which.
+            unreadable.append(pub.name)
+            print(f"::error::{pub.name} is not a usable ssh-ed25519 key ({problem}); omitted from the roster")
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     roster = {
@@ -173,12 +324,13 @@ def main() -> None:
     # Separators without spaces keep the signed bytes stable: the signature
     # covers the exact serialisation, so cosmetic formatting changes would
     # invalidate it.
-    (licenses_path / "roster.json").write_text(
+    (out_path / "roster.json").write_text(
         json.dumps(roster, separators=(",", ":"), sort_keys=True)
     )
     print(
         f"roster: {len(subjects)} subject(s), "
         f"{len(entitlements)} CI account(s), valid until {roster['exp']}"
+        + (f"; {len(unreadable)} unusable key(s) omitted: {', '.join(unreadable)}" if unreadable else "")
     )
 
 
