@@ -2,3 +2,5 @@
 {"at": "2026-08-23T21:59:54Z", "id": "29882392350", "issue": "4", "label": "license:approved", "outcome": "seed", "reconciled_at": "2026-09-17T08:17:43Z", "run": "35198883876"}
 {"at": "2026-09-04T20:21:53Z", "id": "30579725795", "issue": "24", "label": "license:approved", "outcome": "seed", "reconciled_at": "2026-09-17T08:17:43Z", "run": "35198883876"}
 {"at": "2026-09-05T08:24:50Z", "id": "30600848277", "issue": "28", "label": "license:approved", "outcome": "seed", "reconciled_at": "2026-09-17T08:17:43Z", "run": "35198883876"}
+{"at": "2026-09-28T16:20:30Z", "id": "32009603966", "issue": "35", "label": "license:approved", "outcome": "published", "reconciled_at": "2026-09-28T20:13:21Z", "run": "36477598194"}
+{"at": "2026-09-28T20:12:51Z", "id": "32024894741", "issue": "35", "label": "license:approved", "outcome": "published", "reconciled_at": "2026-09-28T20:13:21Z", "run": "36477598194"}
