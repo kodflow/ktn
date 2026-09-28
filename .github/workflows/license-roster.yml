@@ -71,6 +71,13 @@ permissions:
   contents: write
   issues: write
 
+env:
+  # The private store's state branch. Its default branch carries the
+  # `post-commit` required-status ruleset, which no direct push satisfies, so
+  # the private half lives on a branch under no code ruleset — as the public
+  # half lives on `licenses`. A repository variable overrides the name.
+  PRIVATE_STATE_BRANCH: ${{ vars.PRIVATE_STATE_BRANCH || 'licenses' }}
+
 concurrency:
   # Two runs writing licenses/ at once would race on the roster, so approvals
   # are serialised. cancel-in-progress: false is what keeps a running approval
@@ -178,7 +185,8 @@ jobs:
       # nothing to re-anchor.
       #
       # `ssh-key` makes actions/checkout configure the key and set an SSH remote,
-      # so the `git push` in "Commit the private state" needs nothing further.
+      # so the `git push` in "Commit the private state" needs nothing further
+      # than the branch it pushes to (PRIVATE_STATE_BRANCH, next step).
       - name: Check out the private licence state
         if: vars.PRIVATE_STATE_REPO != ''
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -186,6 +194,38 @@ jobs:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
           ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
+
+      # The private store's default branch carries the same required-status
+      # ruleset `main` does here, so a direct push to it is refused (GH013,
+      # "Required status check post-commit is expected") — the failure the
+      # public half already met and answered with `licenses`. The private
+      # half gets the same answer: every read and every write happens on
+      # PRIVATE_STATE_BRANCH, a branch under no code ruleset. `ls-remote
+      # --exit-code` tells an ABSENT branch (exit 2: created here, from what
+      # the default branch already holds, so nothing recorded before the cut
+      # is left behind) from a remote that did not answer (any other code:
+      # the run fails, rather than starting a second, empty history).
+      - name: Put the private store on its state branch
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          rc=0
+          git ls-remote --exit-code --heads origin "${PRIVATE_STATE_BRANCH}" >/dev/null || rc=$?
+          case "$rc" in
+            0)
+              git fetch --no-tags --depth=1 origin "+refs/heads/${PRIVATE_STATE_BRANCH}:refs/remotes/origin/${PRIVATE_STATE_BRANCH}"
+              git checkout -B "${PRIVATE_STATE_BRANCH}" "origin/${PRIVATE_STATE_BRANCH}"
+              ;;
+            2)
+              echo "::notice::${PRIVATE_STATE_BRANCH} does not exist yet in the private store: it starts from the default branch"
+              git checkout -B "${PRIVATE_STATE_BRANCH}"
+              ;;
+            *)
+              echo "::error::git ls-remote answered ${rc}: the private store's branches could not be read"
+              exit "$rc"
+              ;;
+          esac
 
       - name: Point the state helpers at the private store
         if: vars.PRIVATE_STATE_REPO != ''
@@ -262,7 +302,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "licence: record the publication"
-          git push
+          git push origin "HEAD:${PRIVATE_STATE_BRANCH}"
 
       # After the private half, so a key is never published ahead of the
       # record that bounds it. See the step above.
@@ -322,7 +362,8 @@ jobs:
       # nothing to re-anchor.
       #
       # `ssh-key` makes actions/checkout configure the key and set an SSH remote,
-      # so the `git push` in "Commit the private state" needs nothing further.
+      # so the `git push` in "Commit the private state" needs nothing further
+      # than the branch it pushes to (PRIVATE_STATE_BRANCH, next step).
       - name: Check out the private licence state
         if: vars.PRIVATE_STATE_REPO != ''
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -330,6 +371,38 @@ jobs:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
           ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
+
+      # The private store's default branch carries the same required-status
+      # ruleset `main` does here, so a direct push to it is refused (GH013,
+      # "Required status check post-commit is expected") — the failure the
+      # public half already met and answered with `licenses`. The private
+      # half gets the same answer: every read and every write happens on
+      # PRIVATE_STATE_BRANCH, a branch under no code ruleset. `ls-remote
+      # --exit-code` tells an ABSENT branch (exit 2: created here, from what
+      # the default branch already holds, so nothing recorded before the cut
+      # is left behind) from a remote that did not answer (any other code:
+      # the run fails, rather than starting a second, empty history).
+      - name: Put the private store on its state branch
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          rc=0
+          git ls-remote --exit-code --heads origin "${PRIVATE_STATE_BRANCH}" >/dev/null || rc=$?
+          case "$rc" in
+            0)
+              git fetch --no-tags --depth=1 origin "+refs/heads/${PRIVATE_STATE_BRANCH}:refs/remotes/origin/${PRIVATE_STATE_BRANCH}"
+              git checkout -B "${PRIVATE_STATE_BRANCH}" "origin/${PRIVATE_STATE_BRANCH}"
+              ;;
+            2)
+              echo "::notice::${PRIVATE_STATE_BRANCH} does not exist yet in the private store: it starts from the default branch"
+              git checkout -B "${PRIVATE_STATE_BRANCH}"
+              ;;
+            *)
+              echo "::error::git ls-remote answered ${rc}: the private store's branches could not be read"
+              exit "$rc"
+              ;;
+          esac
 
       - name: Point the state helpers at the private store
         if: vars.PRIVATE_STATE_REPO != ''
@@ -383,7 +456,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "licence: record the revocation"
-          git push
+          git push origin "HEAD:${PRIVATE_STATE_BRANCH}"
 
       - name: Note the revocation
         env:
@@ -467,6 +540,38 @@ jobs:
           repository: ${{ vars.PRIVATE_STATE_REPO }}
           ssh-key: ${{ secrets.PRIVATE_STATE_SSH_KEY }}
           path: private
+
+      # The private store's default branch carries the same required-status
+      # ruleset `main` does here, so a direct push to it is refused (GH013,
+      # "Required status check post-commit is expected") — the failure the
+      # public half already met and answered with `licenses`. The private
+      # half gets the same answer: every read and every write happens on
+      # PRIVATE_STATE_BRANCH, a branch under no code ruleset. `ls-remote
+      # --exit-code` tells an ABSENT branch (exit 2: created here, from what
+      # the default branch already holds, so nothing recorded before the cut
+      # is left behind) from a remote that did not answer (any other code:
+      # the run fails, rather than starting a second, empty history).
+      - name: Put the private store on its state branch
+        if: vars.PRIVATE_STATE_REPO != ''
+        working-directory: private
+        run: |
+          set -euo pipefail
+          rc=0
+          git ls-remote --exit-code --heads origin "${PRIVATE_STATE_BRANCH}" >/dev/null || rc=$?
+          case "$rc" in
+            0)
+              git fetch --no-tags --depth=1 origin "+refs/heads/${PRIVATE_STATE_BRANCH}:refs/remotes/origin/${PRIVATE_STATE_BRANCH}"
+              git checkout -B "${PRIVATE_STATE_BRANCH}" "origin/${PRIVATE_STATE_BRANCH}"
+              ;;
+            2)
+              echo "::notice::${PRIVATE_STATE_BRANCH} does not exist yet in the private store: it starts from the default branch"
+              git checkout -B "${PRIVATE_STATE_BRANCH}"
+              ;;
+            *)
+              echo "::error::git ls-remote answered ${rc}: the private store's branches could not be read"
+              exit "$rc"
+              ;;
+          esac
 
       - name: Point the state helpers at the private store
         if: vars.PRIVATE_STATE_REPO != ''
@@ -599,7 +704,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "licence: move the commercial half off the public branch"
-          git push
+          git push origin "HEAD:${PRIVATE_STATE_BRANCH}"
 
       - name: Commit the reconciliation
         working-directory: state
