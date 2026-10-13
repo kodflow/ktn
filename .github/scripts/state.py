@@ -87,6 +87,18 @@ COMMERCIAL_FILES = (
 )
 
 
+# How many CI owners ONE licence may cover BESIDE its primary beneficiary, so
+# three in all. A CI seat covers every repository its owner holds, so each
+# additional owner is a whole organisation's CI riding on one licence; without
+# a bound, one purchase covers any number of them and the licence stops being
+# the billing unit this file says it is. Three mirrors the three devices a
+# licence carries — a person's own account and up to two organisations they run
+# CI in — and anything past it is a negotiation for a maintainer, not a label.
+# record_owner.py refuses an addition that would exceed it, and build_roster.py
+# enforces it again, because a hand edit to the private store passes neither.
+MAX_ADDITIONAL_CI_OWNERS = 2
+
+
 def private_for(state_dir: pathlib.Path) -> pathlib.Path:
     """Where the COMMERCIAL half of the state lives, given the public half.
 

@@ -174,6 +174,51 @@ def ci_beneficiary(ci_owners: dict, account_id: str) -> str:
     return str(account_id)
 
 
+def additional_beneficiaries(ci_owners: dict, account_id: str) -> list:
+    """The owners this licence covers BESIDE its primary beneficiary, validated.
+
+    Recorded by `ciOwnerAlso:` labels as a sorted list. Everything is checked
+    again here, because the private store can be edited by hand and this is the
+    last code that sees the value before it is signed:
+
+    * a non-list is refused whole. Iterating a bare string "70000003" yields
+      eight one-character ids, every one of them numeric, so a typo would
+      publish CI for accounts 7, 0 and 3;
+    * a non-numeric entry is dropped, as for the primary: a login never matches
+      what a token carries;
+    * past ``state.MAX_ADDITIONAL_CI_OWNERS`` the rest is refused, keeping the
+      lowest ids so the answer depends on the data and not on file order.
+    """
+    also = ci_owners.get(str(account_id), {}).get("also", [])
+    if not isinstance(also, list):
+        print(
+            f"::error::ci-owners.json records `also` for account {account_id} as "
+            f"{type(also).__name__}, not a list; no additional CI owner is published for it."
+        )
+        return []
+    valid = []
+    for owner in also:
+        owner = str(owner)
+        if not owner.isdigit():
+            print(
+                f"::error::ci-owners.json lists a non-numeric additional CI owner {owner!r} for "
+                f"account {account_id}; it is omitted rather than published unmatched."
+            )
+            continue
+        if owner not in valid:
+            valid.append(owner)
+    valid.sort()
+    limit = state.MAX_ADDITIONAL_CI_OWNERS
+    if len(valid) > limit:
+        print(
+            f"::error::account {account_id} lists {len(valid)} additional CI owners; a licence "
+            f"covers at most {limit} beside its primary, so only {', '.join(valid[:limit])} "
+            "are published."
+        )
+        valid = valid[:limit]
+    return valid
+
+
 def ci_entitlements(state_dir: pathlib.Path) -> dict:
     """Which accounts a CI run may be authorised for, and until when.
 
@@ -188,9 +233,13 @@ def ci_entitlements(state_dir: pathlib.Path) -> dict:
 
     The term is the licence's own, so CI expires exactly when the devices do.
     """
-    ci_owners_path = state_dir / "ci-owners.json"
     # Absent for every account that never named one, which is most of them.
-    ci_owners = json.loads(ci_owners_path.read_text() or "{}") if ci_owners_path.exists() else {}
+    #
+    # private_for, because record_owner.py WRITES it there: ci-owners.json is
+    # in COMMERCIAL_FILES. Reading the public directory meant that once a
+    # private store was configured every recorded decision vanished from the
+    # roster, and each licence silently fell back to covering its requester.
+    ci_owners = state.load(state.private_for(state_dir) / "ci-owners.json")
 
     # Iterated from the BINDINGS rather than from accounts.json, because the
     # binding is what says an account has a device and the directory is only
@@ -210,8 +259,15 @@ def ci_entitlements(state_dir: pathlib.Path) -> dict:
         # survive revocation so an identity cannot be squatted afterwards.
         if not state.active_devices(state_dir, account_key):
             continue
-        beneficiary = ci_beneficiary(ci_owners, account_key)
-        if not beneficiary:
+        # The primary beneficiary first, then whatever a maintainer added beside
+        # it. An unresolved claim yields no primary and still publishes the
+        # additions: those are maintainer decisions, the claim is not.
+        primary = ci_beneficiary(ci_owners, account_key)
+        beneficiaries = [primary] if primary else []
+        for owner in additional_beneficiaries(ci_owners, account_key):
+            if owner not in beneficiaries:
+                beneficiaries.append(owner)
+        if not beneficiaries:
             continue
         entry = {}
         expires_at = state.account_term(state_dir, account_key)
@@ -237,29 +293,32 @@ def ci_entitlements(state_dir: pathlib.Path) -> dict:
 
                 continue
             entry["exp"] = expires_at
-        # Two licences can legitimately name the same beneficiary — two members
-        # of one organisation, each with their own devices. The owner is covered
-        # while EITHER licence is live, so the later term wins; silently keeping
-        # whichever account was iterated last would have made the answer depend
-        # on dictionary order. Said out loud because two licences pointing at
-        # one owner is also what a duplicate sale looks like.
-        existing = entitled.get(beneficiary)
-        if existing is not None:
-            print(
-                f"::warning::more than one licence names account {beneficiary} as its CI "
-                "beneficiary; CI is covered while any of them is live, so the latest term "
-                "is published. Check this is not a licence sold twice."
-            )
-            # A missing "exp" is the client's "no term recorded", which it
-            # reads as no expiry — the widest entry there is, so it must sort
-            # LAST rather than compare as an empty string and lose to a date.
-            def reach(value: dict) -> tuple:
-                """Order terms so an absent one is the furthest away."""
-                return (1, "") if "exp" not in value else (0, value["exp"])
+        # Every owner this licence covers carries the licence's own term, and
+        # each is merged with any other licence naming the same owner.
+        for beneficiary in beneficiaries:
+            # Two licences can legitimately name the same beneficiary — two members
+            # of one organisation, each with their own devices. The owner is covered
+            # while EITHER licence is live, so the later term wins; silently keeping
+            # whichever account was iterated last would have made the answer depend
+            # on dictionary order. Said out loud because two licences pointing at
+            # one owner is also what a duplicate sale looks like.
+            existing = entitled.get(beneficiary)
+            if existing is not None:
+                print(
+                    f"::warning::more than one licence names account {beneficiary} as its CI "
+                    "beneficiary; CI is covered while any of them is live, so the latest term "
+                    "is published. Check this is not a licence sold twice."
+                )
+                # A missing "exp" is the client's "no term recorded", which it
+                # reads as no expiry — the widest entry there is, so it must sort
+                # LAST rather than compare as an empty string and lose to a date.
+                def reach(value: dict) -> tuple:
+                    """Order terms so an absent one is the furthest away."""
+                    return (1, "") if "exp" not in value else (0, value["exp"])
 
-            if reach(existing) >= reach(entry):
-                continue
-        entitled[beneficiary] = entry
+                if reach(existing) >= reach(entry):
+                    continue
+            entitled[beneficiary] = dict(entry)
     return entitled
 
 

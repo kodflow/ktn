@@ -18,7 +18,7 @@ Files on that branch: `<uuid>.pub` (published devices), `device-owners.json`
 (device → numeric account id), `accounts.json` (login → numeric id),
 `account-terms.json` (account → term), `<uuid>.meta.json` (per-device copy of
 the term), `account-quotas.json` (optional per-account seat override),
-`ci-owners.json` (requester → CI beneficiary), `required-version.txt`,
+`ci-owners.json` (requester → CI beneficiary, plus `also`: further owners), `required-version.txt`,
 `enrolments.json` (issue → the device it published), `decisions.jsonl` (the
 append-only ledger of label decisions and what became of each), and the signed
 `roster.json` / `roster.signed.json`.
@@ -168,6 +168,38 @@ question; both answers are expressible and neither is inferred. The request form
 may NAME a CI owner, and that name is a claim, never a grant — `ci_owner:
 some-big-org` from an issue body would otherwise cover every repository that org
 owns. A claim never moves a beneficiary a maintainer already decided.
+
+**Several owners per licence.** One person can need CI in their own
+repositories AND in an organisation's: two repository owners, two ids, one
+licence. `also` in a ci-owners.json entry lists the owners covered BESIDE the
+primary beneficiary, each published with the licence's term. It is written by
+`ciOwnerAlso:<numeric-id|self>` and removed by `ciOwnerDrop:<numeric-id|self>`
+labels on an approval, read from the full label set as `ciOwner:` is.
+
+It is a separate label and not "several `ciOwner:` labels" on purpose:
+disagreeing `ciOwner:` labels are a maintainer who relabelled without removing
+the old one, and they still refuse. Had they meant "both", that mistake would
+silently grant two organisations. The new labels can only add or remove, and
+adding never moves the primary.
+
+The cap is `state.MAX_ADDITIONAL_CI_OWNERS` = 2, three owners in all: a CI seat
+covers every repository its owner holds, so each extra owner is a whole
+organisation riding on one licence, and without a bound one purchase covers any
+number of them. Over the cap, NOTHING from that approval is added — keeping
+"the first two" would choose by label order. A contradictory approval (`Also`
+and `Drop` of one id) changes nothing either. Neither fails the approval:
+devices keep working and the log names the refusal. `build_roster.py`
+enforces every rule again (list type, numeric ids, the cap, lowest ids kept)
+because the private store can be edited by hand — and a bare string there would
+otherwise iterate into one-digit account ids.
+
+An entry without `also` is read exactly as before, and a roster built from
+state without it is byte-identical to the previous builder's output.
+
+`build_roster.py` reads ci-owners.json through `state.private_for`, where
+`record_owner.py` writes it. It used to read the public directory, so with
+`PRIVATE_STATE_REPO` configured every recorded CI decision vanished from the
+roster and each licence fell back to covering its requester.
 
 Two licences may legitimately name one beneficiary (two members of one org). The
 owner is covered while either is live, so the later term is published and the

@@ -40,6 +40,16 @@ import state  # noqa: E402  (the path has to be set before this can resolve)
 # requester", which is a decision, not an absence of one.
 CI_OWNER_LABEL_RE = re.compile(r"^ciOwner:(self|\d+)$")
 
+# Covering a SECOND owner is a different label on purpose. `ciOwner:` stays
+# single-valued: two disagreeing ones are a maintainer who changed their mind
+# without removing the first, and they refuse. Had "several `ciOwner:` labels"
+# meant "several owners", that same mistake would silently grant both. These
+# two can only add or remove one owner beside the primary beneficiary, and a
+# reader of the label set sees which is which.
+CI_OWNER_ALSO_LABEL_RE = re.compile(r"^ciOwnerAlso:(self|\d+)$")
+CI_OWNER_DROP_LABEL_RE = re.compile(r"^ciOwnerDrop:(self|\d+)$")
+ADDITIONAL_LABEL_PREFIXES = ("ciOwnerAlso:", "ciOwnerDrop:")
+
 
 def licenses_dir() -> pathlib.Path:
     """Where licence state lives; see state.licenses_dir."""
@@ -129,6 +139,74 @@ def ci_owner_decisions(labels: list) -> list:
     return claims
 
 
+def additional_owner_labels(labels: list, account_id: str) -> tuple:
+    """The `ciOwnerAlso:` and `ciOwnerDrop:` ids in the label set, as two sets.
+
+    `self` resolves to the requester, as it does for `ciOwner:`. A label with
+    the prefix and a malformed value is REPORTED: a login is not what a token
+    carries, and silently ignoring it would leave a maintainer believing they
+    had granted something.
+    """
+    adds, drops = set(), set()
+    for name in labels:
+        also = CI_OWNER_ALSO_LABEL_RE.match(name)
+        drop = CI_OWNER_DROP_LABEL_RE.match(name)
+        if also or drop:
+            value = (also or drop).group(1)
+            (adds if also else drops).add(account_id if value == "self" else value)
+        elif name.startswith(ADDITIONAL_LABEL_PREFIXES):
+            print(
+                f"::warning::label {name!r} is ignored: an additional CI owner is named by its "
+                "NUMERIC account id (or `self`), because that is what a run's "
+                "`repository_owner_id` carries."
+            )
+    return adds, drops
+
+
+def apply_additional_owners(entry: dict, account_id: str, adds: set, drops: set) -> None:
+    """Add and remove owners beside the primary beneficiary, or refuse and change nothing.
+
+    Every refusal here leaves the record exactly as it was and does NOT fail the
+    approval, for the reason a disagreeing `ciOwner:` does not: a label mistake
+    must not hold a device enrolment hostage, and the log names it.
+    """
+    if not (adds or drops):
+        return
+    current = entry.get("also", [])
+    if not isinstance(current, list):
+        print(
+            f"::error::ci-owners.json records `also` for account {account_id} as "
+            f"{type(current).__name__}, not a list; refusing to change it. Fix the entry by hand."
+        )
+        return
+    contradicted = adds & drops
+    if contradicted:
+        print(
+            f"::error::this approval both adds and drops CI owner(s) {', '.join(sorted(contradicted))} "
+            f"for account {account_id}. Refusing every `ciOwnerAlso:`/`ciOwnerDrop:` change it "
+            "carries; remove the label that no longer applies and re-apply `license:approved`."
+        )
+        return
+    proposed = sorted((set(current) | adds) - drops)
+    limit = state.MAX_ADDITIONAL_CI_OWNERS
+    if len(proposed) > limit:
+        print(
+            f"::error::account {account_id} would cover {len(proposed)} additional CI owners "
+            f"({', '.join(proposed)}); a licence covers at most {limit} beside its primary "
+            "beneficiary. NOTHING from this approval was added — choosing which to keep would "
+            "be choosing by label order. Drop one with `ciOwnerDrop:<id>` first."
+        )
+        return
+    for owner in sorted(set(proposed) - set(current)):
+        print(f"account {account_id}: CI also covers account {owner} (by label)")
+    for owner in sorted(set(current) - set(proposed)):
+        print(f"::warning::account {account_id}: CI no longer covers account {owner} (by label); every run under {owner} stops being covered")
+    if proposed:
+        entry["also"] = proposed
+    else:
+        entry.pop("also", None)
+
+
 def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
     """Separate WHO ASKED from WHO A CI RUN IS FOR, and never conflate them.
 
@@ -152,6 +230,11 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
       someone else and nothing here can verify the requester speaks for them.
       build_roster.py omits the CI entry and says so on every build.
     * ``beneficiary`` — a maintainer answered, by label. That id is the CI key.
+
+    Orthogonal to all three, ``also`` lists further owners the same licence
+    covers, added by `ciOwnerAlso:<id>` and removed by `ciOwnerDrop:<id>`, at
+    most ``state.MAX_ADDITIONAL_CI_OWNERS`` of them. An entry without it is read
+    exactly as before, so every file written before it existed stays valid.
 
     This script does not choose the policy. Whether an organisation's CI seat
     belongs to the organisation or to the member who bought the licence is a
@@ -183,7 +266,8 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
         # says so on every build, so this stays visible until it is fixed.
         decisions = []
     decision = decisions[0] if decisions else ""
-    if not (claimed or decision):
+    adds, drops = additional_owner_labels(labels, account_id)
+    if not (claimed or decision or adds or drops):
         return
     if not account_id:
         print(
@@ -219,7 +303,7 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
                 "stops being covered."
             )
         print(f"account {account_id}: CI beneficiary is account {resolved} (by label)")
-    elif "beneficiary" not in entry:
+    elif claimed and "beneficiary" not in entry:
         print(
             f"::warning::account {account_id} claims CI for {claimed!r} and no maintainer has "
             "resolved it. Its devices are published and working; it has NO CI entitlement "
@@ -227,15 +311,24 @@ def record_ci_beneficiary(account_id: str, claimed: str, labels: list) -> None:
             "This is reported rather than guessed because publishing the requester's own id "
             "would be an entitlement that never matches."
         )
-    else:
+    elif claimed:
         print(
             f"account {account_id}: CI beneficiary stays account {entry['beneficiary']}; "
             f"this request's claim of {claimed!r} does not move a decided one."
         )
 
+    # Additional owners after the primary decision, and independent of it:
+    # adding an owner never moves the primary one.
+    apply_additional_owners(entry, account_id, adds, drops)
+
     if entry == before:
         return
-    owners[account_id] = entry
+    # An entry emptied by a drop is written as no entry, which reads exactly
+    # as it did before anything was recorded: the requester is the beneficiary.
+    if entry:
+        owners[account_id] = entry
+    else:
+        owners.pop(account_id, None)
     path.write_text(json.dumps(owners, indent=2, sort_keys=True) + "\n")
 
 
