@@ -291,6 +291,13 @@ jobs:
       # of that issue completes it. Never publish an authorisation before the
       # record that bounds it.
       #
+      # "The next approval completes it" holds only because the public Commit
+      # below is guarded too. A re-approval of an already-published key stages
+      # nothing public, and an unguarded `git commit` failed the step on
+      # "nothing to commit" — so the job failed, `sign` (which needs a
+      # SUCCESSFUL publish) skipped, and the label decision that re-approval
+      # recorded privately reached no roster until the next schedule.
+      #
       # `git diff --quiet` guards a no-op: most runs write nothing private,
       # and a schedule must not fail over having had nothing to say.
       - name: Commit the private state
@@ -305,7 +312,8 @@ jobs:
           git push origin "HEAD:${PRIVATE_STATE_BRANCH}"
 
       # After the private half, so a key is never published ahead of the
-      # record that bounds it. See the step above.
+      # record that bounds it. See the step above. Guarded like every other
+      # commit here: an identical re-approval has nothing public to commit.
       - name: Commit
         working-directory: state
         env:
@@ -315,7 +323,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "licence: publish ${UUID}"
+          git diff --cached --quiet || git commit -m "licence: publish ${UUID}"
           git push origin HEAD:licenses
 
       - name: Close the request
