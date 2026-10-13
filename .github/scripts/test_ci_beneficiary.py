@@ -465,5 +465,243 @@ class EntitlementKeyingTest(CIBeneficiaryTestCase):
 
 
 
+class AdditionalBeneficiaryRecordingTest(CIBeneficiaryTestCase):
+    """record_owner.py: one licence may cover more than one CI owner, explicitly.
+
+    The case that forced it is a person who owns repositories AND runs CI in an
+    organisation: two repository owners, two ids, one licence. `ciOwner:` stays
+    single-valued on purpose — two disagreeing `ciOwner:` labels are still the
+    coin toss and still refuse — so covering a second owner is a DIFFERENT
+    label, `ciOwnerAlso:`, which can only ever add. A maintainer who relabels
+    `ciOwner:` to change their mind cannot grant two owners by accident.
+    """
+
+    def record(self, account_id=MEMBER_ID, claimed="", labels=()):
+        """Record a CI decision the way the approval step does."""
+        load("record_owner").record_ci_beneficiary(account_id, claimed, list(labels))
+
+    def quietly(self, **kwargs) -> str:
+        """Record, and return what the run printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.record(**kwargs)
+        return out.getvalue()
+
+    def test_an_additional_owner_is_recorded_beside_the_default(self):
+        """No `ciOwner:`, so the requester stays the primary beneficiary."""
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}"])
+
+        entry = self.ci_owners()[MEMBER_ID]
+        self.assertEqual(entry["also"], [ORG_ID])
+        self.assertNotIn("beneficiary", entry, "an additional owner must not move the primary one")
+
+    def test_additional_owners_are_sorted_not_label_ordered(self):
+        """Label order is the API's, not a maintainer's; the record must not depend on it."""
+        self.record(labels=[f"ciOwnerAlso:{OTHER_ORG_ID}", f"ciOwnerAlso:{ORG_ID}"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], sorted([ORG_ID, OTHER_ORG_ID]))
+
+    def test_also_self_names_the_requester(self):
+        """For a licence whose primary owner is an organisation."""
+        self.record(labels=[f"ciOwner:{ORG_ID}", "ciOwnerAlso:self"])
+
+        entry = self.ci_owners()[MEMBER_ID]
+        self.assertEqual(entry["beneficiary"], ORG_ID)
+        self.assertEqual(entry["also"], [MEMBER_ID])
+
+    def test_additions_accumulate_across_approvals(self):
+        """A second approval adds; it does not replace what the first decided."""
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}"])
+        self.record(labels=[f"ciOwnerAlso:{OTHER_ORG_ID}"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], sorted([ORG_ID, OTHER_ORG_ID]))
+
+    def test_an_additional_owner_leaves_a_decided_primary_alone(self):
+        """Adding is not moving."""
+        self.record(labels=[f"ciOwner:{ORG_ID}"])
+        self.record(labels=[f"ciOwnerAlso:{OTHER_ORG_ID}"])
+
+        entry = self.ci_owners()[MEMBER_ID]
+        self.assertEqual(entry["beneficiary"], ORG_ID)
+        self.assertEqual(entry["also"], [OTHER_ORG_ID])
+
+    def test_disagreeing_ciowner_labels_still_refuse(self):
+        """The coin toss is not reopened by the new label existing."""
+        printed = self.quietly(labels=[f"ciOwner:{ORG_ID}", f"ciOwner:{OTHER_ORG_ID}"])
+
+        self.assertNotIn(MEMBER_ID, self.ci_owners())
+        self.assertIn("disagreeing", printed)
+
+    def test_the_cap_refuses_the_whole_addition_and_keeps_the_record(self):
+        """Over the cap, NOTHING from this approval is added.
+
+        Keeping "the first two" would choose by an order nobody chose. The
+        approval itself is not failed: devices keep working, and the refusal
+        is in the log.
+        """
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}"])
+        printed = self.quietly(labels=["ciOwnerAlso:70000010", "ciOwnerAlso:70000011"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], [ORG_ID])
+        self.assertIn("::error::", printed)
+
+    def test_the_cap_admits_exactly_the_limit(self):
+        """The control for the row above: the limit itself is allowed."""
+        limit = load("state").MAX_ADDITIONAL_CI_OWNERS
+        ids = [str(70000020 + i) for i in range(limit)]
+        self.record(labels=[f"ciOwnerAlso:{i}" for i in ids])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], sorted(ids))
+
+    def test_a_label_already_recorded_does_not_count_twice_against_the_cap(self):
+        """Re-approving with the same labels is idempotent, never a refusal."""
+        limit = load("state").MAX_ADDITIONAL_CI_OWNERS
+        labels = [f"ciOwnerAlso:{70000030 + i}" for i in range(limit)]
+        self.record(labels=labels)
+        printed = self.quietly(labels=labels)
+
+        self.assertEqual(len(self.ci_owners()[MEMBER_ID]["also"]), limit)
+        self.assertNotIn("::error::", printed)
+
+    def test_drop_removes_an_additional_owner(self):
+        """The way out is a label too, so nobody edits the private store by hand."""
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}", f"ciOwnerAlso:{OTHER_ORG_ID}"])
+        self.record(labels=[f"ciOwnerDrop:{ORG_ID}"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], [OTHER_ORG_ID])
+
+    def test_dropping_the_last_one_removes_the_field(self):
+        """An empty list is written as no list, so the file reads as it did before."""
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}"])
+        self.record(labels=[f"ciOwnerDrop:{ORG_ID}"])
+
+        self.assertNotIn("also", self.ci_owners().get(MEMBER_ID, {}))
+
+    def test_also_and_drop_of_one_id_refuse_both(self):
+        """A contradiction is not resolved by whichever is applied second."""
+        self.record(labels=[f"ciOwnerAlso:{ORG_ID}"])
+        printed = self.quietly(labels=[f"ciOwnerAlso:{ORG_ID}", f"ciOwnerDrop:{ORG_ID}", f"ciOwnerAlso:{OTHER_ORG_ID}"])
+
+        self.assertEqual(self.ci_owners()[MEMBER_ID]["also"], [ORG_ID])
+        self.assertIn("::error::", printed)
+
+    def test_a_malformed_additional_label_is_reported_not_guessed(self):
+        """A login is not what a token carries; it must not be recorded."""
+        printed = self.quietly(labels=["ciOwnerAlso:some-org"])
+
+        self.assertNotIn(MEMBER_ID, self.ci_owners())
+        self.assertIn("::warning::", printed)
+
+    def test_an_additional_owner_with_no_requester_id_is_not_stored(self):
+        """No key to record it under, exactly as for `ciOwner:`."""
+        self.record(account_id="", labels=[f"ciOwnerAlso:{ORG_ID}"])
+
+        self.assertEqual(self.ci_owners(), {})
+
+    def test_an_existing_single_owner_file_is_read_unchanged(self):
+        """Backward compatibility: a record written before `also` existed.
+
+        Recording nothing new must leave the file byte-identical.
+        """
+        path = self.licenses / "ci-owners.json"
+        legacy = json.dumps({MEMBER_ID: {"beneficiary": ORG_ID, "decidedBy": "maintainer"}}, indent=2, sort_keys=True) + "\n"
+        path.write_text(legacy)
+        self.record(labels=[f"ciOwner:{ORG_ID}"])
+
+        self.assertEqual(path.read_text(), legacy)
+
+
+class AdditionalBeneficiaryEntitlementTest(EntitlementKeyingTest):
+    """build_roster.py: every owner a licence covers gets the licence's term."""
+
+    def test_an_additional_owner_is_published_beside_the_requester(self):
+        """The kitsunium case: a personal account AND its organisation."""
+        self.enrol(term="2027-03-01T00:00:00Z")
+        self.write("ci-owners.json", {MEMBER_ID: {"also": [ORG_ID]}})
+
+        self.assertEqual(self.entitlements(), {
+            MEMBER_ID: {"exp": "2027-03-01T00:00:00Z"},
+            ORG_ID: {"exp": "2027-03-01T00:00:00Z"},
+        })
+
+    def test_additional_owners_ride_on_a_decided_primary(self):
+        """A decided organisation plus another one."""
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"beneficiary": ORG_ID, "also": [OTHER_ORG_ID]}})
+
+        self.assertEqual(sorted(self.entitlements()), sorted([ORG_ID, OTHER_ORG_ID]))
+
+    def test_an_unresolved_claim_still_publishes_what_a_maintainer_added(self):
+        """The claim stays unresolved; the explicit addition is a decision."""
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"claimed": "some-org", "also": [ORG_ID]}})
+
+        self.assertEqual(list(self.entitlements()), [ORG_ID])
+
+    def test_an_additional_owner_equal_to_the_primary_is_one_entry(self):
+        """Naming the same owner twice covers it once."""
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"also": [MEMBER_ID]}})
+
+        self.assertEqual(list(self.entitlements()), [MEMBER_ID])
+
+    def test_a_non_numeric_additional_owner_is_omitted(self):
+        """The same rule as for the primary: a login never matches a token."""
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"also": ["some-org", ORG_ID]}})
+
+        self.assertEqual(sorted(self.entitlements()), sorted([MEMBER_ID, ORG_ID]))
+
+    def test_a_string_instead_of_a_list_is_refused_not_iterated(self):
+        """THE TRAP: iterating "70000003" yields eight one-digit account ids.
+
+        Every one of them is numeric, so without a type check a hand edit
+        writing a bare string would publish CI for accounts 7, 0 and 3.
+        """
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"also": ORG_ID}})
+
+        self.assertEqual(list(self.entitlements()), [MEMBER_ID])
+
+    def test_the_cap_holds_against_a_hand_edit(self):
+        """The recorder enforces the cap; the publisher does not trust that it did."""
+        limit = load("state").MAX_ADDITIONAL_CI_OWNERS
+        extra = [str(70000040 + i) for i in range(limit + 2)]
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"also": extra}})
+
+        published = self.entitlements()
+        self.assertEqual(sorted(published), sorted([MEMBER_ID] + sorted(extra)[:limit]))
+
+    def test_revoking_the_last_device_withdraws_every_owner(self):
+        """No separate revocation path for the additional owners to escape."""
+        self.enrol()
+        self.write("ci-owners.json", {MEMBER_ID: {"also": [ORG_ID]}})
+        (self.licenses / f"{MAC}.pub").unlink()
+
+        self.assertEqual(self.entitlements(), {})
+
+    def test_the_decisions_are_read_from_the_private_store(self):
+        """ci-owners.json is COMMERCIAL_FILES: record_owner writes it privately.
+
+        The publisher read it from the PUBLIC directory, so once a private store
+        was configured every recorded decision vanished from the roster and each
+        licence fell back to its requester — an organisation's seat silently
+        reverting to the member who bought it.
+        """
+        private = pathlib.Path(self.tmp.name) / "private"
+        private.mkdir()
+        os.environ["PRIVATE_STATE_DIR"] = str(private)
+        self.addCleanup(os.environ.pop, "PRIVATE_STATE_DIR", None)
+        self.enrol()
+        #: enrol() writes through self.licenses; move what it wrote where the
+        #: approval chain would have put it.
+        for name in ("owners.json", "accounts.json", "licences.json"):
+            (self.licenses / name).rename(private / name)
+        (private / "ci-owners.json").write_text(json.dumps({MEMBER_ID: {"beneficiary": ORG_ID}}))
+
+        self.assertEqual(list(self.entitlements()), [ORG_ID])
+
+
 if __name__ == "__main__":
     unittest.main()

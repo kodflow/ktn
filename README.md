@@ -23,6 +23,57 @@ with a message saying so.
 
 **A CI run does not spend a device seat.** Your three devices stay yours.
 
+### Which repositories a CI seat covers
+
+A run is matched on the **numeric id of the repository's owner** — the
+`repository_owner_id` GitHub writes into the token — never on who opened the
+licence request. By default your licence covers repositories owned by your own
+account. An organisation is a different owner with a different id, so its
+repositories are covered only once that id is on your licence.
+
+**One licence covers up to three owners**: its primary one (you, unless a
+maintainer decided otherwise) and up to two more, typically organisations you
+run CI in. Ask on your licence issue, giving the organisation's numeric id
+(`gh api orgs/<org> --jq .id`). A maintainer adds it with a
+`ciOwnerAlso:<numeric-id>` label on one of your approved requests and
+re-applies `license:approved`; it is published at the next roster signature,
+within about twenty minutes, with your licence's own term. `ciOwnerDrop:<id>`
+removes one the same way. Each covered owner ends when your licence does.
+
+When a run is refused because its owner is not covered,
+`ktn-linter license status` says so and prints the id it presented:
+
+```
+Status:  NOT VALID — this roster requires CI runs to be authorised as CI, and it does not cover this GitHub account — contact the vendor
+Reason:  CI_NOT_ENTITLED (no entry for this account id)
+Owner:   this run presented repository_owner_id 183549249 — …
+```
+
+That id is the one to ask for. A binary older than the first release after
+v1.45.4 cannot report a CI seat at all — it answers "No licence on this
+machine" on every keyless runner, so `kodflow/ktn/setup` refuses even a
+covered run; `setup` installs the latest release, so this resolves itself once
+that release is out.
+
+#### Example: kitsunium
+
+Repositories of the `kitsunium` organisation (owner id `183549249`) run CI
+under the `kodflow` licence (account `133899878`). The order matters, because
+each step is useless without the one before it:
+
+1. The `license status` fix (kodflow/ktn-linter) is merged **and released** —
+   the setup action reads that command's verdict, and before the fix it never
+   reports a CI seat.
+2. This repository's support for several CI owners per licence is merged.
+3. A maintainer adds `ciOwnerAlso:183549249` to an approved `kodflow` request
+   (the latest enrolment, #35) and removes then re-applies
+   `license:approved`. The device is already published, so this is a
+   re-approval: no seat is spent and the term does not move.
+4. The next roster signature (every twenty minutes) publishes
+   `"ci": {"133899878": …, "183549249": …}` — both, with the same term.
+5. Re-run the kitsunium workflow; `license status` reports
+   `Subject: ci:kitsunium/<repo>` and `Status:  valid`.
+
 This replaces passing a private key from a repository secret. That secret was
 readable by every workflow in the repository and by everyone with write
 access — and a CI credential is exactly the one that has to be revocable

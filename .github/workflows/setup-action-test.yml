@@ -1,14 +1,29 @@
 name: Test the setup action
 
 # The action is the only thing standing between a customer's CI and a working
-# linter, so it has to be exercised on every change. Two paths are covered
-# because they fail very differently:
+# linter, so it has to be exercised on every change. The paths covered fail
+# very differently:
 #
-#   * the negative path always runs — a freshly minted, unenrolled key must be
-#     refused with a message that names the reason, not a generic failure;
-#   * the positive path runs only when a licence secret is available, since a
-#     fork or a first-time contributor has none and should not see a red run
+#   * the negative paths always run — a run that can prove nothing, a freshly
+#     minted unenrolled key, and an id-token the linter cannot verify must all
+#     be refused;
+#   * the CI-seat path is the one customers use: no key, `id-token: write`, and
+#     a roster whose `ci` block covers this repository's owner;
+#   * the key path runs only when a licence secret is available, since a fork
+#     or a first-time contributor has none and should not see a red run
 #     because of it.
+#
+# An id-token for an owner the roster does NOT cover cannot be produced here:
+# every run of this repository carries kodflow's owner id, which the roster
+# covers. That refusal (CI_NOT_ENTITLED, naming the owner id) is pinned by the
+# linter's own suite — TestReportLicenseStatus_CISeat in kodflow/ktn-linter —
+# against a signed fixture roster and token.
+#
+# FIRST_CI_STATUS_RELEASE: `license status` only learned to report the CI seat
+# in the release after v1.45.4. Up to that version it answered "No licence on
+# this machine" on a keyless runner whatever the token proved, so the CI-seat
+# assertions are skipped, with a warning, while `latest` is still that old.
+# Any later release carries the fix and the assertions bind on their own.
 
 on:
   push:
@@ -19,6 +34,7 @@ on:
   pull_request:
     paths:
       - "setup/**"
+      - ".github/workflows/setup-action-test.yml"
       - "install.sh"
   schedule:
     # The roster expires every 24h. A daily run catches a signing pipeline that
@@ -29,6 +45,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The last release whose `license status` could not report a CI seat.
+  LAST_RELEASE_WITHOUT_CI_STATUS: v1.45.4
 
 jobs:
   refuses-a-run-that-cannot-prove-itself:
@@ -65,6 +85,99 @@ jobs:
             exit 1
           fi
           echo "Refused, as it must be."
+
+  accepts-a-keyless-run-with-an-id-token:
+    name: A keyless run with an id-token holds a CI seat
+    runs-on: ubuntu-latest
+    # The one grant this action exists for. No key anywhere; the run proves it
+    # is CI with the token GitHub mints, and the signed roster's `ci` block
+    # covers this repository's owner (kodflow, 133899878).
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up ktn-linter with no key
+        id: setup
+        continue-on-error: true
+        uses: ./setup
+
+      - name: The CI seat must be valid
+        env:
+          OUTCOME: ${{ steps.setup.outcome }}
+          SUBJECT: ${{ steps.setup.outputs.subject }}
+        run: |
+          set -euo pipefail
+          installed=$(ktn-linter version | awk '{print $NF}')
+          # Compared without the leading v, so `1.46.0` and `v1.46.0` sort alike.
+          oldest=$(printf '%s\n%s\n' "${installed#v}" "${LAST_RELEASE_WITHOUT_CI_STATUS#v}" | sort -V | head -n1)
+          if [ "$oldest" = "${installed#v}" ]; then
+            echo "::warning::latest is ${installed}, whose \`license status\` cannot report a CI seat; skipping until a later release is published."
+            exit 0
+          fi
+          if [ "$OUTCOME" != "success" ]; then
+            echo "::error::a keyless run with a valid id-token was refused by ${installed}; see the setup step's log."
+            exit 1
+          fi
+          if [ "$SUBJECT" != "ci:${GITHUB_REPOSITORY}" ]; then
+            echo "::error::authorised as '${SUBJECT}', want 'ci:${GITHUB_REPOSITORY}'"
+            exit 1
+          fi
+          # Valid status is necessary, not sufficient: prove a gated command runs.
+          ktn-linter rules > /dev/null
+          echo "CI seat held by ${SUBJECT} under ${installed}."
+
+  refuses-an-id-token-it-cannot-verify:
+    name: An id-token the linter cannot verify is refused
+    runs-on: ubuntu-latest
+    # id-token: write is granted, so a real token COULD be minted — but the mint
+    # endpoint is pointed somewhere that is not GitHub's, which the linter must
+    # refuse to send the runner's credential to. A pass here would mean the
+    # seat is granted without a verified token.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: The action must refuse
+        id: attempt
+        continue-on-error: true
+        uses: ./setup
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: https://token-mint.invalid/
+
+      - name: Fail if the refusal did not happen, or happened for the wrong reason
+        env:
+          OUTCOME: ${{ steps.attempt.outcome }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: https://token-mint.invalid/
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::the action accepted a CI seat whose token it could not have verified"
+            exit 1
+          fi
+          installed=$(ktn-linter version | awk '{print $NF}')
+          # Compared without the leading v, so `1.46.0` and `v1.46.0` sort alike.
+          oldest=$(printf '%s\n%s\n' "${installed#v}" "${LAST_RELEASE_WITHOUT_CI_STATUS#v}" | sort -V | head -n1)
+          if [ "$oldest" = "${installed#v}" ]; then
+            echo "::warning::latest is ${installed}, which refuses every keyless run; the refusal reason is not checked until a later release is published."
+            exit 0
+          fi
+          status=$(ktn-linter license status 2>&1 || true)
+          printf '%s\n' "$status"
+          if ! printf '%s' "$status" | grep -q 'Reason:  CI_UNVERIFIABLE'; then
+            echo "::error::refused, but not as an unverifiable CI token"
+            exit 1
+          fi
+          echo "Refused as CI_UNVERIFIABLE, as it must be."
 
   refuses-an-unenrolled-key:
     name: An unenrolled key is refused with a reason
