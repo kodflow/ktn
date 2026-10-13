@@ -327,6 +327,14 @@ refused.
 
 ## Workflow ordering that other code depends on
 
+**Re-approving an already-published key is how a label decision is recorded
+on an existing licence** (`ciOwnerAlso:`, `ciOwner:`): re-apply
+`license:approved`. It stages nothing on the public branch, so every `git
+commit` in the workflow carries the `git diff --cached --quiet ||` guard — the
+public publish commit once lacked it, failed on "nothing to commit", and the
+`sign` job, which needs a successful `publish`, never re-signed the roster for
+that run. `test_workflow_commits.py` fails the build on an unguarded commit.
+
 `license-roster.yml` publishes the key, then runs `record_owner.py`, then
 `record_expiry.py`. The last reads the binding the first wrote to find the
 account whose term to apply, so that order is load-bearing.
