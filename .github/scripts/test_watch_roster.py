@@ -110,15 +110,21 @@ class FreshnessTest(WatchTestCase):
     """Publication stops hours before clients notice. That gap is the warning."""
 
     def test_a_stale_signature_is_reported_while_the_window_is_still_open(self):
-        """The early signal: 20 hours of window left and nothing publishing.
+        """The early signal: under 12 hours of window left and nothing publishing.
 
         Waiting for the window to close would turn a fixable morning into an
         outage. The signer's own freshness alarm cannot see this at all — it
         only fires from inside a run that got that far.
         """
-        findings = self.judge({"raw": bundle(roster(iat_hours_ago=4))})
+        findings = self.judge({"raw": bundle(roster(iat_hours_ago=13))})
 
         self.assertMentions(findings, "publication has stopped")
+
+    def test_a_signature_inside_githubs_real_cadence_is_healthy(self):
+        """GitHub spaces scheduled runs up to 10.5h apart; that is not an outage."""
+        findings = self.judge({"raw": bundle(roster(iat_hours_ago=11))})
+
+        self.assertEqual(findings, [])
 
     def test_a_closed_window_is_reported_as_clients_refusing(self):
         findings = self.judge({"raw": bundle(roster(iat_hours_ago=30))})
@@ -209,11 +215,16 @@ class SignerLivenessTest(WatchTestCase):
     """The question the signing workflow cannot answer about itself."""
 
     def test_a_signer_that_has_not_succeeded_recently_is_reported(self):
-        stale = (NOW - datetime.timedelta(hours=5)).isoformat().replace("+00:00", "Z")
+        stale = (NOW - datetime.timedelta(hours=13)).isoformat().replace("+00:00", "Z")
 
         findings = self.judge(signer=stale)
 
         self.assertMentions(findings, "has not succeeded")
+
+    def test_a_signer_within_githubs_real_cadence_is_healthy(self):
+        gap = (NOW - datetime.timedelta(hours=11)).isoformat().replace("+00:00", "Z")
+
+        self.assertEqual(self.judge(signer=gap), [])
 
     def test_an_unknown_last_success_is_reported(self):
         """Not knowing is a finding. It is how a disabled workflow looks."""
