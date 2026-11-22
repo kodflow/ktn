@@ -138,30 +138,39 @@ jobs:
     # endpoint is pointed somewhere that is not GitHub's, which the linter must
     # refuse to send the runner's credential to. A pass here would mean the
     # seat is granted without a verified token.
+    #
+    # The forged endpoint is set INSIDE the shell, on the linter's own command
+    # line, never through a step's `env:`. The runner writes the real
+    # ACTIONS_ID_TOKEN_REQUEST_URL into every script step's environment after
+    # the step's `env:` has been applied (ScriptHandler.RunAsync in
+    # actions/runner), so an `env:` override is silently replaced by GitHub's
+    # endpoint. That is also why this job does not go through `uses: ./setup`:
+    # nothing outside a composite action reaches the environment its steps
+    # run with, so the action only ever sees the genuine endpoint. This job
+    # used to set the override on the action step: the linter then received a
+    # genuine token, rightly granted the seat, and the job failed every day
+    # from v1.45.5, the first release that could grant one.
+    #
+    # What the action decides is exactly what is asserted below: its verify
+    # step refuses when `license status` exits non-zero or does not print
+    # `Status:  valid` (setup/action.yml).
     permissions:
       contents: read
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          persist-credentials: false
-
-      - name: The action must refuse
-        id: attempt
-        continue-on-error: true
-        uses: ./setup
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: https://token-mint.invalid/
-
-      - name: Fail if the refusal did not happen, or happened for the wrong reason
-        env:
-          OUTCOME: ${{ steps.attempt.outcome }}
-          ACTIONS_ID_TOKEN_REQUEST_URL: https://token-mint.invalid/
+      - name: Install ktn-linter
         run: |
           set -euo pipefail
-          if [ "$OUTCOME" != "failure" ]; then
-            echo "::error::the action accepted a CI seat whose token it could not have verified"
+          curl -sSL https://raw.githubusercontent.com/kodflow/ktn/main/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Fail if the forged endpoint is not refused, or is refused for the wrong reason
+        run: |
+          set -euo pipefail
+          # Without the grant the refusal would be the no-id-token case, which
+          # the first job already covers; this one must be about the endpoint.
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::no id-token grant reached this step, so it cannot test an unverifiable endpoint"
             exit 1
           fi
           installed=$(ktn-linter version | awk '{print $NF}')
@@ -171,8 +180,13 @@ jobs:
             echo "::warning::latest is ${installed}, which refuses every keyless run; the refusal reason is not checked until a later release is published."
             exit 0
           fi
-          status=$(ktn-linter license status 2>&1 || true)
+          rc=0
+          status=$(ACTIONS_ID_TOKEN_REQUEST_URL=https://token-mint.invalid/ ktn-linter license status 2>&1) || rc=$?
           printf '%s\n' "$status"
+          if [ "$rc" -eq 0 ] && printf '%s' "$status" | grep -q 'Status:  valid'; then
+            echo "::error::${installed} granted a CI seat whose token it could not have verified"
+            exit 1
+          fi
           if ! printf '%s' "$status" | grep -q 'Reason:  CI_UNVERIFIABLE'; then
             echo "::error::refused, but not as an unverifiable CI token"
             exit 1
