@@ -44,15 +44,20 @@ import sys
 # see the duplicated licenses_dir() helpers for the same trade.
 CLIENT_MAX_BYTES = 4 * 1024 * 1024
 WARN_BYTES = CLIENT_MAX_BYTES // 2
-# Signing runs every 20 minutes. A served roster whose signature is older than
-# this means at least six consecutive slots produced nothing, which is a
-# problem hours before the window closes.
-MAX_IAT_AGE_HOURS = 2
+# The signer asks GitHub for a run every 20 minutes and GitHub does not keep
+# to it: measured over 271 scheduled runs the gaps are 3 to 10.5 hours. Judging
+# freshness against the requested cadence therefore alarmed on a healthy
+# roster all day. The guarantee that matters to clients is the margin before
+# `exp`, so the age limit is the 24-hour validity minus EXPIRY_MARGIN_HOURS:
+# past it, the margin check below fires anyway and the two never disagree.
+MAX_IAT_AGE_HOURS = 12
 # Half the 24-hour window. Past this, publication has been broken for half a
 # day and the remaining margin is what a human has to work with.
 EXPIRY_MARGIN_HOURS = 12
-# The signer's own cadence plus room for GitHub delaying a scheduled run.
-SIGNER_MAX_SILENCE_MINUTES = 90
+# Same bound for "did signing succeed recently": the longest observed gap
+# between runs (10.5h) fits inside it, a signer silent longer than the age
+# limit does not.
+SIGNER_MAX_SILENCE_MINUTES = MAX_IAT_AGE_HOURS * 60
 
 
 def hours_between(later: datetime.datetime, earlier: datetime.datetime) -> float:
@@ -173,9 +178,9 @@ def check_origin(name: str, served: dict, now: datetime.datetime, verify) -> lis
     age = hours_between(now, served["iat"])
     if age > MAX_IAT_AGE_HOURS:
         findings.append(
-            f"**{name}** serves a roster signed {age:.1f}h ago; signing runs every 20 "
-            f"minutes, so anything over {MAX_IAT_AGE_HOURS}h means publication has "
-            "stopped. Nothing is broken for clients yet — that is the point of saying it now."
+            f"**{name}** serves a roster signed {age:.1f}h ago; GitHub delays the "
+            f"schedule by hours, but anything over {MAX_IAT_AGE_HOURS}h means publication "
+            "has stopped. Nothing is broken for clients yet — that is the point of saying it now."
         )
 
     left = hours_between(served["exp"], now)
@@ -243,9 +248,9 @@ def check_signer(last_success: str, now: datetime.datetime) -> list:
     silent = hours_between(now, moment) * 60
     if silent > SIGNER_MAX_SILENCE_MINUTES:
         return [
-            f"The signing workflow has not succeeded for {silent / 60:.1f}h. It runs every "
-            "20 minutes: it is failing, or it is not being started at all, and those have "
-            "different causes."
+            f"The signing workflow has not succeeded for {silent / 60:.1f}h, longer than "
+            "GitHub's observed delays explain: it is failing, or it is not being started at "
+            "all, and those have different causes."
         ]
     return []
 
